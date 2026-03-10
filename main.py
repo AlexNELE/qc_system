@@ -352,19 +352,25 @@ if __name__ == "__main__":
     import settings as _settings
     import auth
 
+    # UserCacheDB is always needed (local accounts, user management) regardless
+    # of whether Active Directory is enabled.  Only LDAPAuthService requires AD.
+    from auth.user_cache import UserCacheDB
+    user_cache = UserCacheDB()
+
     if _settings.AUTH_AD_ENABLED:
         logger.info(
-            "Active Directory enabled — building services, "
+            "Active Directory enabled — building LDAP service, "
             "starting with guest session (Login button in header)"
         )
-        ldap_svc, user_cache = auth.build_services()
+        from auth.ldap_service import LDAPAuthService
+        ldap_svc = LDAPAuthService()
         session = auth.create_guest_session()
     else:
         logger.info(
             "Active Directory disabled (AUTH_AD_ENABLED=False) — "
             "starting without authentication"
         )
-        ldap_svc, user_cache = None, None
+        ldap_svc = None
         session = auth.create_no_auth_session()
 
     auth.set_session(session)
