@@ -1,0 +1,36 @@
+{
+    "cameras": [
+        0,
+        1,
+        2,
+        3
+    ],
+    "expected_count": 160,
+    "model_path": "models/yolov8_model.onnx",
+    "conf_threshold": 0.5,
+    "iou_threshold": 0.45,
+    "target_class_id": 0,
+    "camera_reconnect_delay": 2.0,
+    "camera_reconnect_max": 30.0,
+    "save_annotated_images": true,
+    "log_level": "DEBUG",
+    "auth": {
+        "active_directory_enabled": true,
+        "no_auth_default_role": "ADMIN",
+        "ldap_servers": [
+            "dc1.example.com",
+            "dc2.example.com"
+        ],
+        "ldap_domain": "example.com",
+        "ldap_base_dn": "DC=example,DC=com",
+        "ldap_group_role_map": {
+            "CN=QC-Admins": "ADMIN",
+            "CN=QC-Supervisors": "SUPERVISOR",
+            "CN=QC-Operators": "OPERATOR"
+        },
+        "ldap_default_role": "OPERATOR",
+        "ldap_use_tls": false,
+        "ldap_use_ssl": false,
+        "ldap_connect_timeout": 5.0
+    }
+}

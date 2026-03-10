@@ -1,0 +1,443 @@
+"""
+ui/login_dialog.py — PySide6 login dialog with Active Directory + local-cache fallback.
+
+UX flow
+-------
+1. Dialog opens before MainWindow is shown.
+2. A background QThread probes LDAP connectivity and updates a status
+   indicator (online / offline mode banner).
+3. Operator types SAMAccountName + password, presses Login.
+4. A second QThread (AuthWorker) calls LDAPAuthService.authenticate().
+   - On LDAP success → UserSession is set → dialog accepts.
+   - On LDAPUnavailableError → AuthWorker falls back to UserCacheDB.authenticate_offline().
+     If that succeeds → UserSession is set → dialog accepts with a visible
+     "Offline mode" warning.
+   - On LDAPAuthError (bad credentials) → inline error label shown.
+   - On LDAPUnavailableError + no cache match → error shown, user cannot login.
+5. After accept(), the caller reads ``dialog.session`` to get the UserSession.
+
+Design constraints
+------------------
+- NO blocking calls on the main (UI) thread.  All LDAP I/O runs in AuthWorker.
+- LoginDialog is modal; the event loop spins normally inside exec().
+- All Qt widget operations occur on the main thread via signal/slot.
+
+Styling
+-------
+The dialog inherits the application-wide Apple dark-mode palette from main.py.
+Additional inline styles keep the dialog compact and consistent.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+from PySide6.QtCore import QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+import settings
+from auth.ldap_service import LDAPAuthService, LDAPAuthError, LDAPUnavailableError
+from auth.user_cache import UserCacheDB
+from auth.permissions import UserSession
+
+logger = logging.getLogger("auth.login_dialog")
+
+# ---------------------------------------------------------------------------
+# Colours (match main_window Apple dark palette)
+# ---------------------------------------------------------------------------
+_C_SURFACE   = "#2C2C2E"
+_C_TEXT      = "#FFFFFF"
+_C_MUTED     = "#8E8E93"
+_C_ERROR     = "#FF453A"
+_C_WARNING   = "#FF9F0A"
+_C_SUCCESS   = "#30D158"
+_C_BLUE      = "#0A84FF"
+_C_SEPARATOR = "rgba(255,255,255,0.10)"
+
+
+# ---------------------------------------------------------------------------
+# AuthWorker — off-thread LDAP + cache authentication
+# ---------------------------------------------------------------------------
+
+class _AuthWorker(QThread):
+    """
+    Runs LDAP authentication on a dedicated thread so the UI never blocks.
+
+    Signals
+    -------
+    succeeded(UserSession)
+        Authentication passed (either via LDAP or offline cache).
+    failed(str)
+        Human-readable failure reason to display in the dialog.
+    offline_fallback()
+        Emitted when LDAP was unreachable and cache lookup is about to start.
+    """
+
+    succeeded       = Signal(object)  # UserSession
+    failed          = Signal(str)
+    offline_fallback = Signal()
+
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        ldap_service: LDAPAuthService,
+        user_cache: UserCacheDB,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._username     = username
+        self._password     = password
+        self._ldap_service = ldap_service
+        self._user_cache   = user_cache
+
+    def run(self) -> None:
+        """Authentication pipeline executed off the main thread."""
+        try:
+            session = self._ldap_service.authenticate(self._username, self._password)
+            # Persist/update local cache so offline login works next time
+            try:
+                self._user_cache.upsert_user(session, self._password)
+            except Exception as cache_exc:
+                logger.warning("Failed to update user cache: %s", cache_exc)
+            self.succeeded.emit(session)
+
+        except LDAPUnavailableError as unreach_exc:
+            logger.warning("LDAP unreachable, trying offline cache: %s", unreach_exc)
+            self.offline_fallback.emit()
+            session = self._user_cache.authenticate_offline(self._username, self._password)
+            if session is not None:
+                self.succeeded.emit(session)
+            else:
+                self.failed.emit(
+                    "Active Directory is unreachable and no offline credentials "
+                    "are cached for this account.\n\n"
+                    "Connect to the network and try again, or contact your administrator."
+                )
+
+        except LDAPAuthError as auth_exc:
+            logger.warning("LDAP auth error for %s: %s", self._username, auth_exc)
+            self.failed.emit(str(auth_exc))
+
+        except Exception as exc:
+            logger.error("Unexpected auth error: %s", exc, exc_info=True)
+            self.failed.emit(
+                f"An unexpected error occurred during login.\n"
+                f"Details: {exc}\n\n"
+                f"Contact your system administrator."
+            )
+
+
+# ---------------------------------------------------------------------------
+# ConnectivityProbe — background LDAP reachability check
+# ---------------------------------------------------------------------------
+
+class _ConnectivityProbe(QThread):
+    """
+    Quick TCP probe to show online/offline badge before the user presses Login.
+
+    Does NOT bind; only checks whether the LDAP port is open.
+    """
+
+    result_ready = Signal(bool)  # True = online
+
+    def __init__(self, ldap_service: LDAPAuthService, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._ldap_service = ldap_service
+
+    def run(self) -> None:
+        reachable = self._ldap_service.is_server_reachable()
+        self.result_ready.emit(reachable)
+
+
+# ---------------------------------------------------------------------------
+# LoginDialog
+# ---------------------------------------------------------------------------
+
+class LoginDialog(QDialog):
+    """
+    Modal login dialog shown before MainWindow is displayed.
+
+    After ``exec()`` returns ``QDialog.DialogCode.Accepted``, read
+    ``dialog.session`` to obtain the authenticated ``UserSession``.
+
+    Parameters
+    ----------
+    ldap_service:
+        Pre-constructed LDAPAuthService.  Passed in (not constructed here)
+        so the caller can inject a mock for testing.
+    user_cache:
+        Pre-constructed UserCacheDB for offline fallback.
+    parent:
+        Qt parent widget (usually None at startup).
+    """
+
+    def __init__(
+        self,
+        ldap_service: LDAPAuthService,
+        user_cache: UserCacheDB,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._ldap_service  = ldap_service
+        self._user_cache    = user_cache
+        self._session: Optional[UserSession] = None
+        self._auth_worker: Optional[_AuthWorker] = None
+
+        self.setWindowTitle("QC System — Login")
+        self.setModal(True)
+        self.setFixedWidth(380)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"LoginDialog {{ background-color: {_C_SURFACE}; }}"
+            f"QLabel {{ background: transparent; color: {_C_TEXT}; }}"
+        )
+
+        self._build_ui()
+        self._start_connectivity_probe()
+
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
+
+    @property
+    def session(self) -> Optional[UserSession]:
+        """The authenticated UserSession, or None if dialog was cancelled."""
+        return self._session
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 28, 28, 24)
+        root.setSpacing(0)
+
+        # ── App title / logo row ──────────────────────────────────────
+        title = QLabel("QC Inspection System")
+        title.setFont(QFont("Segoe UI", 18, QFont.Weight.Light))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"color: {_C_TEXT};")
+        root.addWidget(title)
+        root.addSpacing(4)
+
+        subtitle = QLabel("Industrial Quality Control")
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet(f"color: {_C_MUTED};")
+        root.addWidget(subtitle)
+        root.addSpacing(20)
+
+        # ── Connectivity badge ────────────────────────────────────────
+        self._connectivity_label = QLabel("Checking AD connection\u2026")
+        self._connectivity_label.setFont(QFont("Segoe UI", 9))
+        self._connectivity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._connectivity_label.setStyleSheet(f"color: {_C_MUTED};")
+        root.addWidget(self._connectivity_label)
+        root.addSpacing(16)
+
+        # ── Separator ─────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"QFrame {{ background-color: {_C_SEPARATOR}; border: none; }}")
+        root.addWidget(sep)
+        root.addSpacing(20)
+
+        # ── Username ──────────────────────────────────────────────────
+        un_label = QLabel("Username (SAMAccountName)")
+        un_label.setFont(QFont("Segoe UI", 10))
+        un_label.setStyleSheet(f"color: {_C_MUTED};")
+        root.addWidget(un_label)
+        root.addSpacing(4)
+
+        self._username_edit = QLineEdit()
+        self._username_edit.setPlaceholderText("jsmith")
+        self._username_edit.setMinimumHeight(36)
+        self._username_edit.returnPressed.connect(self._on_login_clicked)
+        root.addWidget(self._username_edit)
+        root.addSpacing(14)
+
+        # ── Password ──────────────────────────────────────────────────
+        pw_label = QLabel("Password")
+        pw_label.setFont(QFont("Segoe UI", 10))
+        pw_label.setStyleSheet(f"color: {_C_MUTED};")
+        root.addWidget(pw_label)
+        root.addSpacing(4)
+
+        self._password_edit = QLineEdit()
+        self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password_edit.setPlaceholderText("••••••••")
+        self._password_edit.setMinimumHeight(36)
+        self._password_edit.returnPressed.connect(self._on_login_clicked)
+        root.addWidget(self._password_edit)
+        root.addSpacing(8)
+
+        # ── Offline warning (hidden until needed) ─────────────────────
+        self._offline_banner = QLabel(
+            "Active Directory is unreachable — attempting offline login."
+        )
+        self._offline_banner.setFont(QFont("Segoe UI", 9))
+        self._offline_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._offline_banner.setWordWrap(True)
+        self._offline_banner.setStyleSheet(
+            f"color: {_C_WARNING}; padding: 4px; "
+            f"border: 1px solid {_C_WARNING}; border-radius: 6px;"
+        )
+        self._offline_banner.setVisible(False)
+        root.addWidget(self._offline_banner)
+        root.addSpacing(4)
+
+        # ── Inline error label ────────────────────────────────────────
+        self._error_label = QLabel("")
+        self._error_label.setFont(QFont("Segoe UI", 9))
+        self._error_label.setWordWrap(True)
+        self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._error_label.setStyleSheet(f"color: {_C_ERROR};")
+        self._error_label.setVisible(False)
+        root.addWidget(self._error_label)
+        root.addSpacing(16)
+
+        # ── Login button ──────────────────────────────────────────────
+        self._login_btn = QPushButton("Login")
+        self._login_btn.setObjectName("btn_batch_start")   # reuse Apple-blue style
+        self._login_btn.setMinimumHeight(38)
+        self._login_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
+        self._login_btn.clicked.connect(self._on_login_clicked)
+        root.addWidget(self._login_btn)
+        root.addSpacing(10)
+
+        # ── Cancel / Exit button ──────────────────────────────────────
+        cancel_btn = QPushButton("Exit Application")
+        cancel_btn.setMinimumHeight(34)
+        cancel_btn.setFont(QFont("Segoe UI", 11))
+        cancel_btn.clicked.connect(self.reject)
+        root.addWidget(cancel_btn)
+
+    # ------------------------------------------------------------------
+    # Connectivity probe
+    # ------------------------------------------------------------------
+
+    def _start_connectivity_probe(self) -> None:
+        probe = _ConnectivityProbe(self._ldap_service, self)
+        probe.result_ready.connect(self._on_connectivity_result)
+        probe.start()
+
+    @Slot(bool)
+    def _on_connectivity_result(self, online: bool) -> None:
+        if online:
+            self._connectivity_label.setText("Active Directory: Connected")
+            self._connectivity_label.setStyleSheet(f"color: {_C_SUCCESS};")
+        else:
+            self._connectivity_label.setText("Active Directory: Unreachable — offline mode available")
+            self._connectivity_label.setStyleSheet(f"color: {_C_WARNING};")
+
+    # ------------------------------------------------------------------
+    # Login logic
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_login_clicked(self) -> None:
+        """Validate inputs and spawn the auth worker thread."""
+        username = self._username_edit.text().strip()
+        password = self._password_edit.text()
+
+        if not username:
+            self._show_error("Please enter your username.")
+            self._username_edit.setFocus()
+            return
+        if not password:
+            self._show_error("Please enter your password.")
+            self._password_edit.setFocus()
+            return
+
+        self._clear_error()
+        self._set_busy(True)
+
+        self._auth_worker = _AuthWorker(
+            username     = username,
+            password     = password,
+            ldap_service = self._ldap_service,
+            user_cache   = self._user_cache,
+            parent       = self,
+        )
+        self._auth_worker.succeeded.connect(self._on_auth_succeeded)
+        self._auth_worker.failed.connect(self._on_auth_failed)
+        self._auth_worker.offline_fallback.connect(self._on_offline_fallback)
+        self._auth_worker.finished.connect(lambda: self._set_busy(False))
+        self._auth_worker.start()
+
+    @Slot(object)
+    def _on_auth_succeeded(self, session: UserSession) -> None:
+        self._session = session
+        logger.info(
+            "Login accepted | user=%s role=%s via=%s",
+            session.username, session.role.name, session.authenticated_via,
+        )
+        self.accept()
+
+    @Slot(str)
+    def _on_auth_failed(self, message: str) -> None:
+        self._show_error(message)
+        self._password_edit.clear()
+        self._password_edit.setFocus()
+
+    @Slot()
+    def _on_offline_fallback(self) -> None:
+        self._offline_banner.setVisible(True)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _set_busy(self, busy: bool) -> None:
+        self._login_btn.setEnabled(not busy)
+        self._username_edit.setEnabled(not busy)
+        self._password_edit.setEnabled(not busy)
+        self._login_btn.setText("Authenticating\u2026" if busy else "Login")
+
+    def _show_error(self, message: str) -> None:
+        self._error_label.setText(message)
+        self._error_label.setVisible(True)
+
+    def _clear_error(self) -> None:
+        self._error_label.setText("")
+        self._error_label.setVisible(False)
+        self._offline_banner.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Keyboard shortcut: Escape to cancel
+    # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Graceful cleanup: ensure worker thread is stopped before dialog closes
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        if self._auth_worker is not None and self._auth_worker.isRunning():
+            self._auth_worker.wait(2000)
+        super().closeEvent(event)

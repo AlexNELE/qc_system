@@ -1,0 +1,14 @@
+PySide6>=6.6.0
+opencv-python>=4.9.0
+onnxruntime>=1.17.0
+numpy>=1.26.0
+reportlab>=4.0.0
+
+# Active Directory / LDAP authentication
+# Pure-Python LDAP3 client — no native GSSAPI or OpenLDAP required on Windows.
+ldap3>=2.9.1
+
+# Optional: bcrypt for stronger offline password hashing.
+# If not installed, auth/user_cache.py falls back to PBKDF2-HMAC-SHA256 (stdlib).
+# Uncomment to enable:
+# bcrypt>=4.1.0
