@@ -14,6 +14,8 @@ cache.  The cache stores:
     demote a local account without an AD policy change — used for emergency
     access.
   - Last-login timestamp.
+  - ``is_local`` flag (1 = locally-created account, 0 = AD-synced).
+  - ``force_password_change`` flag (1 = must set a new password on next login).
 
 Security notes
 --------------
@@ -30,14 +32,16 @@ Schema
 ::
 
     CREATE TABLE IF NOT EXISTS user_cache (
-        username         TEXT PRIMARY KEY,
-        display_name     TEXT NOT NULL,
-        email            TEXT NOT NULL DEFAULT '',
-        ad_role          TEXT NOT NULL,
-        role_override    TEXT,               -- NULL = use ad_role
-        password_hash    TEXT NOT NULL,
-        last_login_utc   DATETIME NOT NULL,
-        last_login_via   TEXT NOT NULL       -- 'ldap' | 'cache'
+        username              TEXT PRIMARY KEY,
+        display_name          TEXT NOT NULL,
+        email                 TEXT NOT NULL DEFAULT '',
+        ad_role               TEXT NOT NULL,
+        role_override         TEXT,               -- NULL = use ad_role
+        password_hash         TEXT NOT NULL,
+        last_login_utc        DATETIME NOT NULL,
+        last_login_via        TEXT NOT NULL,      -- 'ldap' | 'cache'
+        is_local              INTEGER NOT NULL DEFAULT 0,
+        force_password_change INTEGER NOT NULL DEFAULT 0
     );
 
 FUTURE: Add ``locked`` INTEGER DEFAULT 0 column to allow Admins to
@@ -52,11 +56,32 @@ import os
 import secrets
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 import settings
 from auth.permissions import Role, UserSession
+
+
+# ---------------------------------------------------------------------------
+# OfflineAuthResult — returned by authenticate_offline()
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OfflineAuthResult:
+    """
+    Return type of :meth:`UserCacheDB.authenticate_offline`.
+
+    Attributes
+    ----------
+    session:
+        The authenticated :class:`UserSession`.
+    force_password_change:
+        ``True`` when the user must set a new password before using the app.
+    """
+    session: UserSession
+    force_password_change: bool
 
 logger = logging.getLogger("auth.user_cache")
 
@@ -137,16 +162,25 @@ PRAGMA synchronous  = NORMAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS user_cache (
-    username       TEXT    PRIMARY KEY,
-    display_name   TEXT    NOT NULL,
-    email          TEXT    NOT NULL DEFAULT '',
-    ad_role        TEXT    NOT NULL,
-    role_override  TEXT,
-    password_hash  TEXT    NOT NULL,
-    last_login_utc DATETIME NOT NULL,
-    last_login_via TEXT    NOT NULL
+    username              TEXT     PRIMARY KEY,
+    display_name          TEXT     NOT NULL,
+    email                 TEXT     NOT NULL DEFAULT '',
+    ad_role               TEXT     NOT NULL,
+    role_override         TEXT,
+    password_hash         TEXT     NOT NULL,
+    last_login_utc        DATETIME NOT NULL,
+    last_login_via        TEXT     NOT NULL,
+    is_local              INTEGER  NOT NULL DEFAULT 0,
+    force_password_change INTEGER  NOT NULL DEFAULT 0
 );
 """
+
+# Migration statements — applied with try/except so they are safe to run
+# against existing databases that already have the base schema columns.
+_MIGRATIONS = [
+    "ALTER TABLE user_cache ADD COLUMN is_local              INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE user_cache ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -279,14 +313,16 @@ class UserCacheDB:
 
     def authenticate_offline(
         self, username: str, password: str
-    ) -> Optional[UserSession]:
+    ) -> Optional[OfflineAuthResult]:
         """
         Verify credentials against the local cache (offline fallback).
 
-        Returns a UserSession on success, or None if the user has no cache
-        entry or the password is wrong.
+        Returns an :class:`OfflineAuthResult` on success, or ``None`` if the
+        user has no cache entry or the password is wrong.
 
         The role used is ``role_override`` if set, otherwise ``ad_role``.
+        The ``force_password_change`` flag from the DB row is propagated so
+        the login flow can prompt the user to set a new password.
         """
         username = username.strip().lower()
         row = self._fetch_user_row(username)
@@ -321,7 +357,8 @@ class UserCacheDB:
         logger.info(
             "Offline auth successful | user=%s role=%s", username, role.name
         )
-        return session
+        force_pw = bool(row.get("force_password_change", 0))
+        return OfflineAuthResult(session=session, force_password_change=force_pw)
 
     def get_all_users(self) -> list[dict]:
         """
@@ -331,20 +368,178 @@ class UserCacheDB:
         -------
         List of dicts with keys:
             username, display_name, email, ad_role, role_override,
-            last_login_utc, last_login_via
+            last_login_utc, last_login_via, is_local, force_password_change
         (password_hash is intentionally excluded)
         """
         conn = self._get_connection()
         cur  = conn.execute(
             """
-            SELECT username, display_name, email, ad_role,
-                   role_override, last_login_utc, last_login_via
+            SELECT username, display_name, email, ad_role, role_override,
+                   last_login_utc, last_login_via, is_local, force_password_change
             FROM user_cache
             ORDER BY username ASC
             """
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Local account management
+    # ------------------------------------------------------------------
+
+    def create_local_user(
+        self,
+        username: str,
+        display_name: str,
+        role: Role,
+        temp_password: str,
+        force_password_change: bool = True,
+    ) -> None:
+        """
+        Create a brand-new locally-managed account (not synced from AD).
+
+        Parameters
+        ----------
+        username:
+            Unique login identifier (stored lowercase).
+        display_name:
+            Full name shown in the UI header.
+        role:
+            Initial :class:`Role` for the account.
+        temp_password:
+            Temporary plain-text password — stored as a PBKDF2/bcrypt hash.
+        force_password_change:
+            When ``True`` (default) the user will be prompted to set a new
+            password on their first login.
+        """
+        username = username.strip().lower()
+        pw_hash  = _hash_password(temp_password)
+        now_utc  = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+
+        with self._write_lock:
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO user_cache
+                        (username, display_name, email, ad_role, role_override,
+                         password_hash, last_login_utc, last_login_via,
+                         is_local, force_password_change)
+                    VALUES (?, ?, '', ?, NULL, ?, ?, 'local', 1, ?)
+                    """,
+                    (
+                        username,
+                        display_name,
+                        role.name,
+                        pw_hash,
+                        now_utc,
+                        int(force_password_change),
+                    ),
+                )
+                conn.commit()
+                logger.info(
+                    "Local user created | user=%s role=%s force_pw=%s",
+                    username, role.name, force_password_change,
+                )
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                raise ValueError(f"Username {username!r} already exists in the user cache.")
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logger.error("create_local_user error: %s", exc, exc_info=True)
+                raise
+
+    def delete_user(self, username: str) -> None:
+        """
+        Delete a user record from the cache.
+
+        Safe to call for both local and AD-synced accounts.  Deleting an
+        AD-synced account only removes the cached copy; the user can still
+        authenticate via live LDAP and a new cache entry will be created.
+
+        Parameters
+        ----------
+        username:
+            The exact username to delete (case-insensitive).
+        """
+        username = username.strip().lower()
+        with self._write_lock:
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    "DELETE FROM user_cache WHERE username = ?",
+                    (username,),
+                )
+                conn.commit()
+                logger.info("User deleted from cache | user=%s", username)
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logger.error("delete_user error: %s", exc, exc_info=True)
+                raise
+
+    def set_force_password_change(self, username: str, value: bool) -> None:
+        """
+        Set or clear the ``force_password_change`` flag for a user.
+
+        Parameters
+        ----------
+        username:
+            Target user (case-insensitive).
+        value:
+            ``True`` to require a password change on next login,
+            ``False`` to clear the flag.
+        """
+        username = username.strip().lower()
+        with self._write_lock:
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    "UPDATE user_cache SET force_password_change = ? WHERE username = ?",
+                    (int(value), username),
+                )
+                conn.commit()
+                logger.info(
+                    "force_password_change=%s | user=%s", value, username
+                )
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logger.error("set_force_password_change error: %s", exc, exc_info=True)
+                raise
+
+    def change_password(self, username: str, new_password: str) -> None:
+        """
+        Update the stored password hash for a user.
+
+        Also clears ``force_password_change`` so the user is not re-prompted.
+        Call :meth:`set_force_password_change` afterwards if you want to keep
+        the flag set for some reason.
+
+        Parameters
+        ----------
+        username:
+            Target user (case-insensitive).
+        new_password:
+            New plain-text password — stored as PBKDF2/bcrypt hash.
+        """
+        username = username.strip().lower()
+        pw_hash  = _hash_password(new_password)
+        with self._write_lock:
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    """
+                    UPDATE user_cache
+                    SET password_hash = ?, force_password_change = 0
+                    WHERE username = ?
+                    """,
+                    (pw_hash, username),
+                )
+                conn.commit()
+                logger.info("Password changed | user=%s", username)
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logger.error("change_password error: %s", exc, exc_info=True)
+                raise
 
     def user_exists(self, username: str) -> bool:
         """Return True if the user has a cache entry."""
@@ -371,11 +566,24 @@ class UserCacheDB:
         if not hasattr(self._local, "connection") or self._local.connection is None:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
-            self._local.connection = sqlite3.connect(
-                self._db_path, check_same_thread=False
-            )
-            self._local.connection.executescript(_DDL)
-            self._local.connection.commit()
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.executescript(_DDL)
+            conn.commit()
+
+            # Migration: add new columns to existing databases.
+            # SQLite does not support "ADD COLUMN IF NOT EXISTS" so we catch
+            # the OperationalError that is raised when the column already exists.
+            for stmt in _MIGRATIONS:
+                try:
+                    conn.execute(stmt)
+                    conn.commit()
+                    logger.debug("Migration applied: %s", stmt[:60])
+                except sqlite3.OperationalError:
+                    # Column already exists — this is the normal case for
+                    # databases that were created after the schema was updated.
+                    pass
+
+            self._local.connection = conn
             logger.debug(
                 "UserCacheDB connection opened on thread %s",
                 threading.current_thread().name,

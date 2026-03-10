@@ -123,48 +123,115 @@ QMenu::separator {
 
 /* --- Buttons (default — glass pill) --- */
 QPushButton {
-    background-color: rgba(255,255,255,0.10);
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 rgba(255,255,255,0.14),
+        stop:1 rgba(255,255,255,0.06));
     color: #FFFFFF;
-    border: none;
-    border-radius: 8px;
-    padding: 0px 16px;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 0px 18px;
     font-size: 13px;
     font-weight: 600;
-    min-width: 64px;
+    min-height: 36px;
+    min-width: 72px;
 }
-QPushButton:hover   { background-color: rgba(255,255,255,0.17); }
-QPushButton:pressed { background-color: rgba(255,255,255,0.07); }
+QPushButton:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 rgba(255,255,255,0.22),
+        stop:1 rgba(255,255,255,0.12));
+    border: 1px solid rgba(255,255,255,0.18);
+}
+QPushButton:pressed {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+}
 QPushButton:disabled {
-    color: rgba(255,255,255,0.25);
-    background-color: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.05);
 }
 
-/* Batch Start — Apple system blue */
-QPushButton#btn_batch_start              { background-color: #0A84FF; }
-QPushButton#btn_batch_start:hover        { background-color: #3395FF; }
-QPushButton#btn_batch_start:pressed      { background-color: #006FD6; }
+/* Batch Start — Apple system blue (gradient + border) */
+QPushButton#btn_batch_start {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #3395FF, stop:1 #0A84FF);
+    border: 1px solid rgba(255,255,255,0.18);
+}
+QPushButton#btn_batch_start:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #55AAFF, stop:1 #1E90FF);
+    border: 1px solid rgba(255,255,255,0.26);
+}
+QPushButton#btn_batch_start:pressed {
+    background: #006FD6;
+    border: 1px solid rgba(0,111,214,0.80);
+}
 QPushButton#btn_batch_start:disabled {
-    background-color: rgba(10,132,255,0.25);
-    color: rgba(255,255,255,0.35);
+    background: rgba(10,132,255,0.22);
+    border: 1px solid rgba(10,132,255,0.15);
+    color: rgba(255,255,255,0.30);
 }
 
-/* Batch End — Apple system red */
-QPushButton#btn_batch_end                { background-color: #FF453A; }
-QPushButton#btn_batch_end:hover          { background-color: #FF6B61; }
-QPushButton#btn_batch_end:pressed        { background-color: #D93025; }
+/* Batch End — Apple system red (gradient + border) */
+QPushButton#btn_batch_end {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #FF6B61, stop:1 #FF453A);
+    border: 1px solid rgba(255,255,255,0.18);
+}
+QPushButton#btn_batch_end:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #FF8880, stop:1 #FF6B61);
+    border: 1px solid rgba(255,255,255,0.26);
+}
+QPushButton#btn_batch_end:pressed {
+    background: #D93025;
+    border: 1px solid rgba(217,48,37,0.80);
+}
 QPushButton#btn_batch_end:disabled {
-    background-color: rgba(255,69,58,0.25);
-    color: rgba(255,255,255,0.35);
+    background: rgba(255,69,58,0.22);
+    border: 1px solid rgba(255,69,58,0.15);
+    color: rgba(255,255,255,0.30);
 }
 
-/* Capture All — Apple system green */
-QPushButton#btn_capture_all              { background-color: #30D158; font-size: 14px; min-width: 110px; }
-QPushButton#btn_capture_all:hover        { background-color: #4DD771; }
-QPushButton#btn_capture_all:pressed      { background-color: #25A244; }
-QPushButton#btn_capture_all:disabled {
-    background-color: rgba(48,209,88,0.25);
-    color: rgba(255,255,255,0.35);
+/* Capture All — Apple system green (gradient + border) */
+QPushButton#btn_capture_all {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #4DD771, stop:1 #30D158);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 14px;
+    min-width: 110px;
 }
+QPushButton#btn_capture_all:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #66E088, stop:1 #4DD771);
+    border: 1px solid rgba(255,255,255,0.26);
+}
+QPushButton#btn_capture_all:pressed {
+    background: #25A244;
+    border: 1px solid rgba(37,162,68,0.80);
+}
+QPushButton#btn_capture_all:disabled {
+    background: rgba(48,209,88,0.22);
+    border: 1px solid rgba(48,209,88,0.15);
+    color: rgba(255,255,255,0.30);
+}
+
+/* Login button — Apple blue (header widget) */
+QPushButton#btn_login {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #3395FF, stop:1 #0A84FF);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 10px;
+    padding: 0px 14px;
+    font-size: 12px;
+    min-height: 28px;
+    min-width: 60px;
+}
+QPushButton#btn_login:hover {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 #55AAFF, stop:1 #1E90FF);
+}
+QPushButton#btn_login:pressed { background: #006FD6; }
 
 /* --- Text input --- */
 QLineEdit {

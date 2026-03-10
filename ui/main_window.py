@@ -1539,41 +1539,18 @@ class MainWindow(QMainWindow):
     @Slot()
     @require_permission(PERM_CHANGE_SETTINGS)
     def _on_open_settings(self) -> None:
-        """
-        Open the application settings dialog (Admin only).
-
-        Permission: PERM_CHANGE_SETTINGS (Admin).
-
-        FUTURE: Implement a SettingsDialog that reads/writes settings.json
-                and offers live reload of CONF_THRESHOLD, EXPECTED_COUNT etc.
-        """
-        QMessageBox.information(
-            self,
-            "Application Settings",
-            f"Settings file location:\n{settings.CONFIG_PATH}\n\n"
-            "Edit the JSON file and restart the application to apply changes.\n\n"
-            "FUTURE: Implement a live SettingsDialog here.",
-        )
+        """Open the live application settings dialog (Admin only)."""
+        from ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(parent=self)
+        dlg.exec()
 
     @Slot()
     @require_permission(PERM_MANAGE_USERS)
     def _on_open_user_management(self) -> None:
-        """
-        Open the user management dialog (Admin only).
-
-        Permission: PERM_MANAGE_USERS (Admin).
-
-        FUTURE: Implement a UserManagementDialog that calls
-                UserCacheDB.get_all_users() and UserCacheDB.set_role_override().
-        """
-        QMessageBox.information(
-            self,
-            "User Management",
-            "User Management dialog is a future feature.\n\n"
-            "Current cached users can be inspected by opening the SQLite DB:\n"
-            f"{settings.USER_CACHE_DB_PATH}\n\n"
-            "FUTURE: Implement a UserManagementDialog with role-override controls.",
-        )
+        """Open the user management dialog (Admin only)."""
+        from ui.user_management_dialog import UserManagementDialog
+        dlg = UserManagementDialog(self._user_cache, parent=self)
+        dlg.exec()
 
     # ------------------------------------------------------------------
     # Graceful shutdown

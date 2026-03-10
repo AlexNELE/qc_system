@@ -85,11 +85,16 @@ class _AuthWorker(QThread):
         Human-readable failure reason to display in the dialog.
     offline_fallback()
         Emitted when LDAP was unreachable and cache lookup is about to start.
+    password_change_required(UserSession)
+        Emitted instead of ``succeeded`` when the user authenticated but the
+        ``force_password_change`` flag is set — the UI must prompt for a new
+        password before accepting the session.
     """
 
-    succeeded       = Signal(object)  # UserSession
-    failed          = Signal(str)
-    offline_fallback = Signal()
+    succeeded                = Signal(object)   # UserSession
+    failed                   = Signal(str)
+    offline_fallback         = Signal()
+    password_change_required = Signal(object)   # UserSession
 
     def __init__(
         self,
@@ -106,7 +111,33 @@ class _AuthWorker(QThread):
         self._user_cache   = user_cache
 
     def run(self) -> None:
-        """Authentication pipeline executed off the main thread."""
+        """
+        Authentication pipeline executed off the main thread.
+
+        Priority order:
+          1. If the username exists in the local cache AND is marked as a
+             local account (``is_local == 1``), authenticate against the
+             local cache directly — LDAP is never contacted for local accounts.
+          2. Otherwise attempt a live LDAP bind.
+          3. On LDAPUnavailableError fall back to the offline cache.
+        """
+        from auth.user_cache import OfflineAuthResult
+
+        # --- Step 1: local-account fast path --------------------------------
+        row = self._user_cache._fetch_user_row(self._username.strip().lower())
+        if row is not None and bool(row.get("is_local", 0)):
+            logger.debug("Local account detected — skipping LDAP for user=%s", self._username)
+            result = self._user_cache.authenticate_offline(self._username, self._password)
+            if result is None:
+                self.failed.emit("Incorrect username or password.")
+                return
+            if result.force_password_change:
+                self.password_change_required.emit(result.session)
+            else:
+                self.succeeded.emit(result.session)
+            return
+
+        # --- Step 2: live LDAP ----------------------------------------------
         try:
             session = self._ldap_service.authenticate(self._username, self._password)
             # Persist/update local cache so offline login works next time
@@ -117,11 +148,15 @@ class _AuthWorker(QThread):
             self.succeeded.emit(session)
 
         except LDAPUnavailableError as unreach_exc:
+            # --- Step 3: offline cache fallback ----------------------------
             logger.warning("LDAP unreachable, trying offline cache: %s", unreach_exc)
             self.offline_fallback.emit()
-            session = self._user_cache.authenticate_offline(self._username, self._password)
-            if session is not None:
-                self.succeeded.emit(session)
+            result = self._user_cache.authenticate_offline(self._username, self._password)
+            if result is not None:
+                if result.force_password_change:
+                    self.password_change_required.emit(result.session)
+                else:
+                    self.succeeded.emit(result.session)
             else:
                 self.failed.emit(
                     "Active Directory is unreachable and no offline credentials "
@@ -382,6 +417,7 @@ class LoginDialog(QDialog):
         self._auth_worker.succeeded.connect(self._on_auth_succeeded)
         self._auth_worker.failed.connect(self._on_auth_failed)
         self._auth_worker.offline_fallback.connect(self._on_offline_fallback)
+        self._auth_worker.password_change_required.connect(self._on_password_change_required)
         self._auth_worker.finished.connect(lambda: self._set_busy(False))
         self._auth_worker.start()
 
@@ -403,6 +439,34 @@ class LoginDialog(QDialog):
     @Slot()
     def _on_offline_fallback(self) -> None:
         self._offline_banner.setVisible(True)
+
+    @Slot(object)
+    def _on_password_change_required(self, session: UserSession) -> None:
+        """
+        Called when authentication succeeded but the account has
+        ``force_password_change`` set.
+
+        Opens the :class:`PasswordChangeDialog` modally.  If the user sets
+        a new password successfully the dialog is accepted with the session;
+        if the user cancels the login is aborted.
+        """
+        from ui.password_change_dialog import PasswordChangeDialog
+        dlg = PasswordChangeDialog(
+            username   = session.username,
+            user_cache = self._user_cache,
+            parent     = self,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._session = session
+            logger.info(
+                "Password changed on first login | user=%s", session.username
+            )
+            self.accept()
+        else:
+            # User cancelled the mandatory password change — do not log in.
+            self._show_error("Password change is required to log in. Please try again.")
+            self._password_edit.clear()
+            self._password_edit.setFocus()
 
     # ------------------------------------------------------------------
     # Helpers
