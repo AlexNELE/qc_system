@@ -15,7 +15,7 @@
     "save_annotated_images": true,
     "log_level": "DEBUG",
     "auth": {
-        "active_directory_enabled": true,
+        "active_directory_enabled": false,
         "no_auth_default_role": "ADMIN",
         "ldap_servers": [
             "dc1.example.com",

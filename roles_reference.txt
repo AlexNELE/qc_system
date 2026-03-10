@@ -1,0 +1,140 @@
+================================================================================
+  QC SYSTEM — ROLE & PERMISSION REFERENCE
+================================================================================
+
+Three roles exist, ordered from least to most privilege.
+Set in Active Directory group membership, or via no_auth_default_role in
+settings.json when Active Directory is disabled.
+
+--------------------------------------------------------------------------------
+  ROLE 1 — OPERATOR  (privilege level 10)
+--------------------------------------------------------------------------------
+
+  Who uses it:  Line workers / observers on the factory floor.
+
+  What they CAN do:
+    - View the live camera feeds
+    - Watch real-time detection counts update on screen
+    - See the current batch status (running / stopped)
+    - View the result history in the main window
+
+  What they CANNOT do:
+    - Start or stop a batch
+    - Press "Capture All"
+    - View or export PDF reports
+    - Open the Settings dialog
+    - Manage user accounts
+    - Control cameras
+
+  AD group (default):  CN=QC-Operators
+
+
+--------------------------------------------------------------------------------
+  ROLE 2 — SUPERVISOR  (privilege level 20)
+--------------------------------------------------------------------------------
+
+  Who uses it:  Shift supervisors / line leads who run the inspection process.
+
+  What they CAN do (everything OPERATOR can, plus):
+    - Start a batch            (enter Batch ID and press Batch Start)
+    - End a batch              (press Batch End — triggers PDF report generation)
+    - Capture All              (record a snapshot of all cameras for the batch)
+    - View generated PDF reports
+    - Export / save PDF reports
+    - Control camera settings  (reserved for future per-camera gating)
+
+  What they CANNOT do:
+    - Open the Settings dialog  (conf_threshold, model path, camera list, etc.)
+    - Manage user accounts      (create / edit / delete users in the local cache)
+
+  AD group (default):  CN=QC-Supervisors
+
+
+--------------------------------------------------------------------------------
+  ROLE 3 — ADMIN  (privilege level 30)
+--------------------------------------------------------------------------------
+
+  Who uses it:  IT / engineering / plant managers with full system access.
+
+  What they CAN do (everything SUPERVISOR can, plus):
+    - Open the Settings dialog  (change thresholds, camera list, log level, etc.)
+    - Manage user accounts      (view, promote, demote, lock local cache accounts)
+
+  There are no restrictions.  Admins can perform every action in the system.
+
+  AD group (default):  CN=QC-Admins
+
+
+================================================================================
+  PERMISSION TABLE (quick reference)
+================================================================================
+
+  Permission          | Operator | Supervisor | Admin
+  --------------------|----------|------------|------
+  batch.start         |    -     |     YES    |  YES
+  batch.end           |    -     |     YES    |  YES
+  batch.capture       |    -     |     YES    |  YES
+  report.view         |    -     |     YES    |  YES
+  report.export       |    -     |     YES    |  YES
+  camera.control      |    -     |     YES    |  YES
+  settings.change     |    -     |      -     |  YES
+  users.manage        |    -     |      -     |  YES
+
+
+================================================================================
+  AUTHENTICATION MODES
+================================================================================
+
+  Mode 1 — Active Directory (settings.json: "active_directory_enabled": true)
+    - User logs in with their Windows domain username and password.
+    - Role is determined by which AD group the user belongs to
+      (configured in settings.json under ldap_group_role_map).
+    - If AD servers are unreachable, the app falls back to the local
+      offline cache (last successful login is cached on disk).
+    - Default role for users not in any mapped group: OPERATOR.
+
+  Mode 2 — No authentication (settings.json: "active_directory_enabled": false)
+    - No login dialog is shown. The app starts immediately.
+    - All users get the role defined by "no_auth_default_role" (default: ADMIN).
+    - Suitable for single-user workstations or development environments.
+
+
+================================================================================
+  HOW TO ASSIGN ROLES VIA ACTIVE DIRECTORY
+================================================================================
+
+  1. Create the following groups in Active Directory (or rename existing ones):
+       CN=QC-Admins        -> ADMIN role
+       CN=QC-Supervisors   -> SUPERVISOR role
+       CN=QC-Operators     -> OPERATOR role
+
+  2. Add users to the appropriate group.
+
+  3. Group names are configurable in settings.json under "ldap_group_role_map":
+       {
+           "CN=QC-Admins":       "ADMIN",
+           "CN=QC-Supervisors":  "SUPERVISOR",
+           "CN=QC-Operators":    "OPERATOR"
+       }
+     Matching is a case-insensitive substring check, so a partial DN
+     like "CN=QC-Admins" will match
+     "CN=QC-Admins,OU=Groups,DC=example,DC=com".
+
+  4. A user in multiple groups receives the HIGHEST matching role.
+
+  5. A user in no mapped group receives the ldap_default_role (OPERATOR).
+
+
+================================================================================
+  HOW TO CHANGE THE DEFAULT ROLE (NO-AUTH MODE)
+================================================================================
+
+  Edit settings.json:
+    "auth": {
+        "active_directory_enabled": false,
+        "no_auth_default_role": "SUPERVISOR"   <-- OPERATOR, SUPERVISOR, or ADMIN
+    }
+
+  Restart the application for the change to take effect.
+
+================================================================================

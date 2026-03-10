@@ -134,6 +134,37 @@ def create_no_auth_session() -> UserSession:
     )
 
 
+def create_guest_session() -> UserSession:
+    """
+    Create a transient OPERATOR-level guest session.
+
+    Used when ``settings.AUTH_AD_ENABLED`` is ``True`` but the user has
+    not yet logged in (i.e. the application just started).  The guest
+    session carries the minimum privilege level (OPERATOR = view-only)
+    so that all ``@require_permission`` guards are active and deny access
+    to batch-start, capture, settings, and user-management actions until
+    a real AD login is completed.
+
+    The ``authenticated_via`` value is ``'guest'`` which the
+    ``_LoginWidget`` uses to distinguish this session from a real login
+    and to render the "Login" button rather than a user chip.
+
+    Returns
+    -------
+    UserSession
+        A fully populated session with ``authenticated_via='guest'``.
+    """
+    from auth.permissions import Role
+
+    return UserSession(
+        username          = "guest",
+        display_name      = "Not logged in",
+        role              = Role.OPERATOR,
+        authenticated_via = "guest",
+        email             = "",
+    )
+
+
 def show_login(ldap_service, user_cache, parent=None) -> Optional[UserSession]:
     """
     Display the LoginDialog and return the authenticated session.

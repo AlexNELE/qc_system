@@ -274,33 +274,35 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Authentication — behaviour depends on AUTH_AD_ENABLED in settings.json.
     #
-    #   True  → Show login dialog; user must authenticate via AD or the
-    #            local offline cache before MainWindow opens.
+    #   True  → App starts immediately showing the camera grid.  A guest
+    #            OPERATOR session is set so permission guards are active.
+    #            A "Login" button in the header lets the operator
+    #            authenticate via AD at any time.
     #   False → Skip login entirely; an automatic ADMIN session is created
     #            and the application starts immediately without any sign-in.
+    #            The header shows a static "Local User [Administrator]" chip.
     # ------------------------------------------------------------------
     import settings as _settings
     import auth
 
     if _settings.AUTH_AD_ENABLED:
+        logger.info(
+            "Active Directory enabled — building services, "
+            "starting with guest session (Login button in header)"
+        )
         ldap_svc, user_cache = auth.build_services()
-        logger.info("Active Directory enabled — showing login dialog")
-        session = auth.show_login(ldap_svc, user_cache)
-
-        if session is None:
-            # Operator pressed Exit without logging in — shut down cleanly.
-            logger.info("Login cancelled by user — exiting.")
-            sys.exit(0)
+        session = auth.create_guest_session()
     else:
         logger.info(
             "Active Directory disabled (AUTH_AD_ENABLED=False) — "
             "starting without authentication"
         )
+        ldap_svc, user_cache = None, None
         session = auth.create_no_auth_session()
 
     auth.set_session(session)
     logger.info(
-        "Authenticated | user=%s role=%s via=%s",
+        "Initial session | user=%s role=%s via=%s",
         session.username, session.role.name, session.authenticated_via,
     )
 
@@ -309,7 +311,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     from ui.main_window import MainWindow
 
-    window = MainWindow()
+    window = MainWindow(ldap_svc=ldap_svc, user_cache=user_cache)
     window.show()
 
     logger.info("Event loop started")

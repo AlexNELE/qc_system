@@ -109,7 +109,7 @@ from datetime import datetime
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, Slot, QTimer
+from PySide6.QtCore import Qt, Slot, QTimer, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -126,6 +126,9 @@ from PySide6.QtWidgets import (
     QMenu,
     QApplication,
     QFrame,
+    QDialog,
+    QSizePolicy,
+    QStackedWidget,
 )
 
 from services.camera_service import CameraService
@@ -234,8 +237,17 @@ class MainWindow(QMainWindow):
     increments on Capture, and is not incremented for NO Tray events.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        ldap_svc=None,
+        user_cache=None,
+    ) -> None:
         super().__init__()
+        # Auth services — kept alive so the LoginWidget can reuse them.
+        # None when AUTH_AD_ENABLED is False (no-auth mode).
+        self._ldap_svc  = ldap_svc
+        self._user_cache = user_cache
+
         # --- Determine configured cameras ---
         self._camera_ids: list[int] = list(range(len(settings.CAMERAS)))
 
@@ -309,8 +321,9 @@ class MainWindow(QMainWindow):
         self._clock_timer.timeout.connect(self._tick_clock)
         self._clock_timer.start()
 
-        # Populate the session chip now that _build_ui() has created it.
-        self._refresh_session_chip()
+        # Sync the LoginWidget with the current auth.current_session.
+        # _build_ui() creates the widget; this call sets its initial state.
+        self._refresh_login_widget()
 
         logger.info(
             "MainWindow initialised | cameras=%s grid=%s",
@@ -329,10 +342,13 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("File")
 
         # --- Session actions ---
+        # Logout is only meaningful when Active Directory is enabled.
+        # In no-auth mode the item is hidden to avoid confusing operators.
         logout_action = QAction("Logout", self)
         logout_action.setShortcut("Ctrl+Shift+L")
-        logout_action.setToolTip("Log out the current user and return to the login screen.")
+        logout_action.setToolTip("Log out the current user and restore the Login button.")
         logout_action.triggered.connect(self._on_logout)
+        logout_action.setVisible(settings.AUTH_AD_ENABLED)
         file_menu.addAction(logout_action)
 
         file_menu.addSeparator()
@@ -468,18 +484,17 @@ class MainWindow(QMainWindow):
         )
         hbar.addWidget(self._total_counter_label)
 
-        # -- Session info chip (right edge of header bar) --
-        # Displays the logged-in user's display name and role badge.
-        # Populated in _refresh_session_chip() called at end of __init__.
+        # -- Login widget (right edge of header bar) --
+        # Three visual states managed by _LoginWidget:
+        #   - "Login" button  (AD enabled, no real user yet — guest session)
+        #   - "DisplayName [Role] | Logout" (AD enabled, real session active)
+        #   - "Local User [Administrator]" static chip (AD disabled)
+        # Initial state is set by _refresh_login_widget() at end of __init__.
         hbar.addSpacing(12)
-        self._session_chip = QLabel("")
-        self._session_chip.setFont(QFont("Segoe UI", 10))
-        self._session_chip.setStyleSheet(
-            "color: #8E8E93; background: rgba(255,255,255,0.07); "
-            "border-radius: 8px; padding: 2px 10px;"
-        )
-        self._session_chip.setToolTip("Current operator session")
-        hbar.addWidget(self._session_chip)
+        self._login_widget = MainWindow._LoginWidget(parent=self)
+        self._login_widget.login_requested.connect(self._on_login_button_clicked)
+        self._login_widget.logout_requested.connect(self._on_logout)
+        hbar.addWidget(self._login_widget)
 
         root_layout.addWidget(header)
 
@@ -1255,32 +1270,252 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------
+    # Inner class: LoginWidget
+    # ------------------------------------------------------------------
+
+    class _LoginWidget(QWidget):
+        """
+        Compound header widget that shows authentication state.
+
+        Three visual states:
+        ─────────────────────────────────────────────────────────────
+        no_auth   AD disabled.  Static chip: "Local User [Admin]".
+                  No interactive controls.
+
+        guest     AD enabled, nobody logged in yet.
+                  Shows an Apple-blue "Login" QPushButton.
+
+        logged_in AD enabled, real AD / cache session active.
+                  Shows: "<DisplayName>  [<Role>]   | Logout"
+                  Logout is a flat QPushButton styled as a link.
+        ─────────────────────────────────────────────────────────────
+
+        The widget owns its own QHBoxLayout; the parent swaps the
+        whole widget in and out of the header bar so no external
+        widget references need updating.
+
+        Signals
+        -------
+        login_requested()
+            Emitted when the "Login" button is clicked.  The parent
+            window should open LoginDialog and call
+            on_login_succeeded() with the resulting session.
+
+        logout_requested()
+            Emitted when "Logout" is clicked.  The parent should
+            call on_logout() to clear the session and transition
+            back to guest state.
+        """
+
+        login_requested  = Signal()
+        logout_requested = Signal()
+
+        # Colours (match main Apple dark-mode palette)
+        _C_TEXT    = "#FFFFFF"
+        _C_MUTED   = "#8E8E93"
+        _C_BLUE    = "#0A84FF"
+        _C_SURFACE = "rgba(255,255,255,0.07)"
+
+        def __init__(self, parent: Optional[QWidget] = None) -> None:
+            super().__init__(parent)
+            self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            self.setStyleSheet("background: transparent;")
+
+            self._layout = QHBoxLayout(self)
+            self._layout.setContentsMargins(0, 0, 0, 0)
+            self._layout.setSpacing(6)
+
+            # We use a QStackedWidget so we can flip between states without
+            # rebuilding the whole header layout.
+            self._stack = QStackedWidget(self)
+            self._layout.addWidget(self._stack)
+
+            # ----------------------------------------------------------
+            # Page 0 — no_auth: static chip
+            # ----------------------------------------------------------
+            self._page_no_auth = QWidget()
+            p0_lay = QHBoxLayout(self._page_no_auth)
+            p0_lay.setContentsMargins(0, 0, 0, 0)
+            self._chip_no_auth = QLabel("")
+            self._chip_no_auth.setFont(QFont("Segoe UI", 10))
+            self._chip_no_auth.setStyleSheet(
+                f"color: {self._C_MUTED}; background: {self._C_SURFACE}; "
+                "border-radius: 8px; padding: 2px 10px;"
+            )
+            self._chip_no_auth.setToolTip("Authentication disabled — running as local administrator")
+            p0_lay.addWidget(self._chip_no_auth)
+            self._stack.addWidget(self._page_no_auth)   # index 0
+
+            # ----------------------------------------------------------
+            # Page 1 — guest: Login button
+            # ----------------------------------------------------------
+            self._page_guest = QWidget()
+            p1_lay = QHBoxLayout(self._page_guest)
+            p1_lay.setContentsMargins(0, 0, 0, 0)
+            self._btn_login = QPushButton("Login")
+            self._btn_login.setObjectName("btn_batch_start")   # reuse Apple-blue
+            self._btn_login.setFixedHeight(28)
+            self._btn_login.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
+            self._btn_login.setToolTip("Click to authenticate via Active Directory")
+            self._btn_login.clicked.connect(self.login_requested)
+            p1_lay.addWidget(self._btn_login)
+            self._stack.addWidget(self._page_guest)   # index 1
+
+            # ----------------------------------------------------------
+            # Page 2 — logged_in: user chip + logout
+            # ----------------------------------------------------------
+            self._page_logged_in = QWidget()
+            p2_lay = QHBoxLayout(self._page_logged_in)
+            p2_lay.setContentsMargins(0, 0, 0, 0)
+            p2_lay.setSpacing(8)
+
+            self._chip_logged_in = QLabel("")
+            self._chip_logged_in.setFont(QFont("Segoe UI", 10))
+            self._chip_logged_in.setStyleSheet(
+                f"color: {self._C_TEXT}; background: {self._C_SURFACE}; "
+                "border-radius: 8px; padding: 2px 10px;"
+            )
+            self._chip_logged_in.setToolTip("Current operator session")
+            p2_lay.addWidget(self._chip_logged_in)
+
+            # Thin vertical separator
+            vsep = QFrame()
+            vsep.setFrameShape(QFrame.Shape.VLine)
+            vsep.setFixedWidth(1)
+            vsep.setFixedHeight(20)
+            vsep.setStyleSheet("background-color: rgba(255,255,255,0.20); border: none;")
+            p2_lay.addWidget(vsep)
+
+            self._btn_logout = QPushButton("Logout")
+            self._btn_logout.setFlat(True)
+            self._btn_logout.setFont(QFont("Segoe UI", 10))
+            self._btn_logout.setStyleSheet(
+                f"QPushButton {{ color: {self._C_MUTED}; background: transparent; "
+                "border: none; padding: 2px 4px; min-width: 0; }}"
+                f"QPushButton:hover {{ color: {self._C_TEXT}; }}"
+            )
+            self._btn_logout.setToolTip("Log out the current user")
+            self._btn_logout.clicked.connect(self.logout_requested)
+            p2_lay.addWidget(self._btn_logout)
+
+            self._stack.addWidget(self._page_logged_in)   # index 2
+
+            # Start in guest state by default; caller will call refresh().
+            self._stack.setCurrentIndex(1)
+
+        # ──────────────────────────────────────────────────────────────
+        # Public API
+        # ──────────────────────────────────────────────────────────────
+
+        def set_no_auth(self, display_name: str, role_label: str) -> None:
+            """Switch to the static no-auth chip (AD disabled)."""
+            self._chip_no_auth.setText(f"{display_name}  [{role_label}]")
+            self._stack.setCurrentIndex(0)
+
+        def set_guest(self) -> None:
+            """Switch to the Login button (AD enabled, nobody logged in)."""
+            self._stack.setCurrentIndex(1)
+
+        def set_logged_in(self, display_name: str, role_label: str) -> None:
+            """Switch to the user chip + Logout (AD enabled, real session)."""
+            self._chip_logged_in.setText(f"{display_name}  [{role_label}]")
+            self._stack.setCurrentIndex(2)
+
+    # ------------------------------------------------------------------
     # Auth / session helpers
     # ------------------------------------------------------------------
 
-    def _refresh_session_chip(self) -> None:
+    def _refresh_login_widget(self) -> None:
         """
-        Update the right-side header chip with the current user's display
-        name and role badge.  Called once at startup and after re-login.
+        Synchronise the header _LoginWidget with ``auth.current_session``.
+
+        Called once after _build_ui() completes and after every
+        login / logout event so the widget always reflects reality.
+
+        Three cases:
+        - session is None or authenticated_via == 'guest'
+              and AUTH_AD_ENABLED is True  -> show Login button
+        - authenticated_via == 'no_auth'   -> show static chip
+        - any other session                -> show user chip + Logout
         """
         session = auth.current_session
-        if session is None:
-            self._session_chip.setText("Not logged in")
+
+        if not settings.AUTH_AD_ENABLED:
+            # No-auth mode: static chip, no interactive controls.
+            if session is not None:
+                self._login_widget.set_no_auth(
+                    session.display_name, session.role_display()
+                )
+            else:
+                self._login_widget.set_no_auth("Local User", "Administrator")
             return
-        role_label = session.role_display()
-        self._session_chip.setText(f"{session.display_name}  [{role_label}]")
+
+        # AD enabled path
+        if session is None or session.authenticated_via == "guest":
+            self._login_widget.set_guest()
+        else:
+            self._login_widget.set_logged_in(
+                session.display_name, session.role_display()
+            )
+
         logger.debug(
-            "Session chip refreshed | user=%s role=%s", session.username, role_label
+            "LoginWidget refreshed | via=%s",
+            session.authenticated_via if session else "None",
         )
+
+    def _on_login_button_clicked(self) -> None:
+        """
+        Open the LoginDialog modally when the header "Login" button is pressed.
+
+        Uses the ``_ldap_svc`` / ``_user_cache`` instances stored at
+        construction time (built once in main.py and passed in).
+
+        On success: sets the global session, updates all permission-gated
+        buttons by refreshing the widget, and logs the event.
+
+        On cancellation: no change — guest session remains active.
+        """
+        from ui.login_dialog import LoginDialog
+
+        if self._ldap_svc is None or self._user_cache is None:
+            logger.error(
+                "_on_login_button_clicked called but ldap_svc/user_cache are None "
+                "(this should only happen in no-auth mode which has no Login button)"
+            )
+            return
+
+        dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
+        result = dialog.exec()
+
+        if result == QDialog.DialogCode.Accepted and dialog.session is not None:
+            auth.set_session(dialog.session)
+            self._refresh_login_widget()
+            logger.info(
+                "Login accepted via header button | user=%s role=%s via=%s",
+                dialog.session.username,
+                dialog.session.role.name,
+                dialog.session.authenticated_via,
+            )
+            self._status_bar.showMessage(
+                f"Logged in as {dialog.session.display_name} "
+                f"[{dialog.session.role_display()}]",
+                4000,
+            )
+        else:
+            logger.info("Login dialog cancelled — guest session remains active")
 
     @Slot()
     def _on_logout(self) -> None:
         """
-        Log out the current operator.
+        Log out the current operator and return to guest state.
 
-        Stops any running batch first (prompts if one is active), then
-        clears the session and re-shows the LoginDialog.  If the user
-        cancels the new login the application exits.
+        If a batch is running, prompts the operator before stopping it.
+        After logout the header shows the "Login" button again.
+        The application does NOT close — cameras continue running
+        (if a batch was not stopped) so the feed remains visible.
+
+        When AUTH_AD_ENABLED is False this method is not reachable
+        (there is no Logout button and the menu item is hidden).
         """
         if self._batch_running:
             reply = QMessageBox.question(
@@ -1295,31 +1530,11 @@ class MainWindow(QMainWindow):
                 return
             self._batch_end()
 
-        auth.clear_session()
-        logger.info("User logged out")
+        auth.set_session(auth.create_guest_session())
+        logger.info("User logged out — guest session restored")
 
-        # Re-show login dialog
-        from auth.ldap_service import LDAPAuthService
-        from auth.user_cache import UserCacheDB
-        from ui.login_dialog import LoginDialog
-        from PySide6.QtWidgets import QDialog
-
-        # Reconstruct services (stateless — safe to re-create)
-        ldap_svc, user_cache = auth.build_services()
-        dialog = LoginDialog(ldap_svc, user_cache, parent=None)
-        result = dialog.exec()
-
-        if result == QDialog.DialogCode.Accepted and dialog.session is not None:
-            auth.set_session(dialog.session)
-            self._refresh_session_chip()
-            logger.info(
-                "Re-authenticated | user=%s role=%s",
-                dialog.session.username, dialog.session.role.name,
-            )
-        else:
-            # User pressed Exit on the re-login dialog — close the app.
-            logger.info("Re-login cancelled — closing application")
-            self.close()
+        self._refresh_login_widget()
+        self._status_bar.showMessage("Logged out — click Login to sign in again", 4000)
 
     @Slot()
     @require_permission(PERM_CHANGE_SETTINGS)
