@@ -524,7 +524,7 @@ class TestCaptureOK(unittest.TestCase):
 
 
 class TestCaptureMissing(unittest.TestCase):
-    """Test 4 — status == MISSING: missing_count++, DefectService dispatched."""
+    """Test 4 — status == MISSING: missing_count += (expected-detected), DefectService dispatched."""
 
     def test_capture_missing(self):
         result = _make_count_result(detected=1, status="MISSING")
@@ -534,7 +534,7 @@ class TestCaptureMissing(unittest.TestCase):
         win._capture_camera(0)
 
         self.assertEqual(win._batch_ok_count[0],       0)
-        self.assertEqual(win._batch_missing_count[0],  1)
+        self.assertEqual(win._batch_missing_count[0],  159)  # 160 expected - 1 detected
         self.assertEqual(win._batch_total_detected[0], 1)
         self.assertEqual(win._global_total_detected,   1)
 
@@ -656,7 +656,7 @@ class TestCaptureAllMixedResults(unittest.TestCase):
 
         # Camera 1 — MISSING
         self.assertEqual(win._batch_ok_count[1],        0)
-        self.assertEqual(win._batch_missing_count[1],   1)
+        self.assertEqual(win._batch_missing_count[1],   155)  # 160 expected - 5 detected
         self.assertEqual(win._batch_total_detected[1],  5)
 
         # Camera 2 — NO Tray: all zeros

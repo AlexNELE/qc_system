@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import auth
 import settings
 from auth.ldap_service import LDAPAuthError, LDAPUnavailableError
 from auth.user_cache import UserCacheDB
@@ -459,6 +460,7 @@ class LoginDialog(QDialog):
     @Slot(object)
     def _on_auth_succeeded(self, session: UserSession) -> None:
         self._session = session
+        auth.set_session(session)
         logger.info(
             "Login accepted | user=%s role=%s via=%s",
             session.username, session.role.name, session.authenticated_via,
@@ -537,6 +539,18 @@ class LoginDialog(QDialog):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        if self._auth_worker is not None and self._auth_worker.isRunning():
-            self._auth_worker.wait(2000)
+        # Disconnect all outcome signals so a still-running worker cannot
+        # call accept() on an already-closed dialog (race condition fix).
+        if self._auth_worker is not None:
+            for sig in (
+                self._auth_worker.succeeded,
+                self._auth_worker.failed,
+                self._auth_worker.offline_fallback,
+                self._auth_worker.password_change_required,
+                self._auth_worker.finished,
+            ):
+                try:
+                    sig.disconnect()
+                except RuntimeError:
+                    pass
         super().closeEvent(event)

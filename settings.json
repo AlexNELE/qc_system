@@ -1,11 +1,9 @@
 {
     "cameras": [
         0,
-        1,
-        2,
-        3
+        1
     ],
-    "expected_count": 160,
+    "expected_count": 150,
     "model_path": "models/yolov8_model.onnx",
     "conf_threshold": 0.5,
     "iou_threshold": 0.45,
@@ -15,8 +13,9 @@
     "save_annotated_images": true,
     "log_level": "DEBUG",
     "auth": {
-      "active_directory_enabled": true,
-        "no_auth_default_role": "ADMIN",
+        "login_required": true,
+        "active_directory_enabled": true,
+        "no_auth_default_role": "OPERATOR",
         "ldap_servers": [
             "dc1.example.com",
             "dc2.example.com"

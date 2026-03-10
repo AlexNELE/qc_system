@@ -44,3 +44,9 @@ reports/
 # OS
 Thumbs.db
 .DS_Store
+
+# Corrupted DB backups
+*.db.corrupt
+
+# Local settings override (may contain site-specific paths)
+# settings.json is intentionally tracked — only remove if it contains secrets

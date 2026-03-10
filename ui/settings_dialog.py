@@ -206,21 +206,6 @@ class SettingsDialog(QDialog):
         self._build_tab_model()
         self._build_tab_system()
 
-        # Restart-required info banner (hidden until needed)
-        self._restart_info = QLabel("")
-        self._restart_info.setFont(QFont("Segoe UI", 9))
-        self._restart_info.setWordWrap(True)
-        self._restart_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._restart_info.setStyleSheet(
-            f"color: {_C_WARN};"
-            f"background: rgba(255,159,10,0.10);"
-            f"border: 1px solid rgba(255,159,10,0.40);"
-            f"border-radius: 6px;"
-            f"padding: 5px 10px;"
-        )
-        self._restart_info.setVisible(False)
-        root.addWidget(self._restart_info)
-
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -292,8 +277,6 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
 
-        lay.addWidget(_restart_banner())
-
         lay.addWidget(_make_label("Camera sources (integer index or RTSP URL)"))
 
         self._cam_list = QListWidget()
@@ -330,8 +313,6 @@ class SettingsDialog(QDialog):
         lay  = QVBoxLayout(page)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
-
-        lay.addWidget(_restart_banner())
 
         lay.addWidget(_make_label("ONNX model file path"))
 
@@ -379,22 +360,8 @@ class SettingsDialog(QDialog):
         self._ad_enabled_chk = QCheckBox("Active Directory authentication enabled")
         lay.addWidget(self._ad_enabled_chk)
 
-        # AD restart warning
-        self._ad_restart_warn = QLabel(
-            "Changing the Active Directory setting requires a restart."
-        )
-        self._ad_restart_warn.setFont(QFont("Segoe UI", 9))
-        self._ad_restart_warn.setWordWrap(True)
-        self._ad_restart_warn.setStyleSheet(
-            f"color: {_C_WARN}; background: transparent;"
-        )
-        self._ad_restart_warn.setVisible(False)
-        lay.addWidget(self._ad_restart_warn)
-
-        # Connect checkbox so the warning label appears when toggled
-        self._ad_enabled_chk.stateChanged.connect(
-            lambda _: self._ad_restart_warn.setVisible(True)
-        )
+        self._login_required_chk = QCheckBox("Login required (uncheck for auto Operator session)")
+        lay.addWidget(self._login_required_chk)
 
         # No-auth default role (shown only when AD is disabled)
         self._no_auth_role_container = QWidget()
@@ -443,6 +410,7 @@ class SettingsDialog(QDialog):
 
         ad_enabled = settings.AUTH_AD_ENABLED
         self._ad_enabled_chk.setChecked(ad_enabled)
+        self._login_required_chk.setChecked(settings.AUTH_LOGIN_REQUIRED)
         self._no_auth_role_container.setVisible(not ad_enabled)
 
         role_str = settings.AUTH_NO_AUTH_DEFAULT_ROLE.upper()
@@ -528,6 +496,7 @@ class SettingsDialog(QDialog):
             return
 
         log_level     = self._log_level_combo.currentText()
+        login_required = self._login_required_chk.isChecked()
         ad_enabled    = self._ad_enabled_chk.isChecked()
         no_auth_role  = self._no_auth_role_combo.currentText()
         class_id      = self._class_id_spin.value()
@@ -555,6 +524,7 @@ class SettingsDialog(QDialog):
         # Merge auth sub-section carefully
         auth_section = current_json.get("auth", {})
         auth_section["active_directory_enabled"] = ad_enabled
+        auth_section["login_required"]           = login_required
         auth_section["no_auth_default_role"]     = no_auth_role
         current_json["auth"] = auth_section
 
@@ -569,49 +539,29 @@ class SettingsDialog(QDialog):
             self._show_error(f"Could not write settings file:\n{exc}")
             return
 
-        # ── Apply live-reloadable fields ──────────────────────────────
-        settings.EXPECTED_COUNT       = expected
-        settings.CONF_THRESHOLD       = conf
-        settings.IOU_THRESHOLD        = iou
-        settings.TARGET_CLASS_ID      = class_id
+        # ── Apply all settings live ───────────────────────────────────
+        settings.EXPECTED_COUNT        = expected
+        settings.CONF_THRESHOLD        = conf
+        settings.IOU_THRESHOLD         = iou
+        settings.TARGET_CLASS_ID       = class_id
         settings.SAVE_ANNOTATED_IMAGES = save_annotated
-        settings.LOG_LEVEL            = log_level
+        settings.LOG_LEVEL             = log_level
+        settings.CAMERAS               = cameras_raw
+        settings.MODEL_PATH            = model_path
+        settings.AUTH_AD_ENABLED       = ad_enabled
+        settings.AUTH_LOGIN_REQUIRED   = login_required
+        settings.AUTH_NO_AUTH_DEFAULT_ROLE = no_auth_role
 
         numeric_level = getattr(logging, log_level.upper(), logging.DEBUG)
         logging.getLogger().setLevel(numeric_level)
         logger.info(
-            "Live settings applied | expected=%d conf=%.2f iou=%.2f "
-            "class_id=%d log_level=%s",
+            "Settings applied | expected=%d conf=%.2f iou=%.2f "
+            "class_id=%d log_level=%s cameras=%s model=%s ad=%s",
             expected, conf, iou, class_id, log_level,
+            cameras_raw, model_path, ad_enabled,
         )
 
-        # ── Determine if restart-required fields changed ──────────────
-        restart_needed = (
-            cameras_raw      != list(settings.CAMERAS)
-            or model_path    != settings.MODEL_PATH
-            or ad_enabled    != settings.AUTH_AD_ENABLED
-            or no_auth_role  != settings.AUTH_NO_AUTH_DEFAULT_ROLE
-        )
-
-        if restart_needed:
-            self._restart_info.setText(
-                "Restart required: camera sources, model path, or authentication "
-                "settings have changed and will take effect after the application "
-                "is restarted."
-            )
-            self._restart_info.setVisible(True)
-            # Do NOT accept the dialog yet — keep it open so the user can see
-            # the banner.  They may close manually with Cancel.
-            QMessageBox.information(
-                self,
-                "Restart Required",
-                "Live-reloadable settings (thresholds, count, log level) have been "
-                "applied immediately.\n\n"
-                "Camera sources, model path, and authentication settings will take "
-                "effect after restarting the application.",
-            )
-        else:
-            self.accept()
+        self.accept()
 
     # ------------------------------------------------------------------
     # Helpers

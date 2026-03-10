@@ -165,6 +165,31 @@ def create_guest_session() -> UserSession:
     )
 
 
+def create_auto_session() -> UserSession:
+    """
+    Create an automatic OPERATOR session used when login is not required.
+
+    When ``settings.AUTH_LOGIN_REQUIRED`` is ``False`` the application
+    starts in this session instead of a guest session.  The operator can
+    start batches immediately; the Login button in the header is still
+    available for admins to authenticate for elevated access.
+
+    Returns
+    -------
+    UserSession
+        A fully populated session with ``authenticated_via='auto'``.
+    """
+    from auth.permissions import Role
+
+    return UserSession(
+        username          = "operator",
+        display_name      = "Operator",
+        role              = Role.OPERATOR,
+        authenticated_via = "auto",
+        email             = "",
+    )
+
+
 def show_login(ldap_service, user_cache, parent=None) -> Optional[UserSession]:
     """
     Display the LoginDialog and return the authenticated session.

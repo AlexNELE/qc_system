@@ -54,6 +54,7 @@ _DEFAULTS: dict = {
     "log_level": "DEBUG",
     "auth": {
         "active_directory_enabled": True,
+        "login_required": True,
         "no_auth_default_role": "ADMIN",
         "ldap_servers": ["dc1.example.com", "dc2.example.com"],
         "ldap_domain": "example.com",
@@ -332,6 +333,11 @@ USER_CACHE_DB_PATH: str = str(_BASE_DIR / "user_cache.db")
 # directly without any login dialog.  When False, a local ADMIN session is
 # created automatically using AUTH_NO_AUTH_DEFAULT_ROLE.
 AUTH_AD_ENABLED: bool = bool(_auth_cfg.get("active_directory_enabled", True))
+
+# When False the application starts immediately with an automatic OPERATOR
+# session — no login is required.  The Login button in the header remains
+# available so administrators can authenticate for elevated access.
+AUTH_LOGIN_REQUIRED: bool = bool(_auth_cfg.get("login_required", True))
 
 # Role granted to the auto-created session when AUTH_AD_ENABLED is False.
 # Must match a Role enum name exactly: OPERATOR, SUPERVISOR, or ADMIN.

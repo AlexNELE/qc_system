@@ -128,7 +128,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QDialog,
     QSizePolicy,
-    QStackedWidget,
 )
 
 from services.camera_service import CameraService
@@ -227,7 +226,7 @@ class MainWindow(QMainWindow):
     Batch statistics are accumulated in three dicts, updated only on
     "Capture All":
       _batch_ok_count[cam_id]       -> int (OK captures since batch start)
-      _batch_missing_count[cam_id]  -> int (MISSING captures since batch start)
+      _batch_missing_count[cam_id]  -> int (sum of missing items across MISSING captures)
       _batch_total_detected[cam_id] -> int (sum of detected objects on capture)
     These are zeroed in _batch_start() and updated in _capture_camera().
     NO Tray events (detected_count == 0) are excluded from all three dicts.
@@ -527,9 +526,10 @@ class MainWindow(QMainWindow):
             self._grid.addWidget(panel, row, col)
             self._panels[cam_id] = panel
 
-        grid_widget = QWidget()
-        grid_widget.setLayout(self._grid)
-        root_layout.addWidget(grid_widget, stretch=1)
+        self._grid_widget = QWidget()
+        self._grid_widget.setLayout(self._grid)
+        root_layout.addWidget(self._grid_widget, stretch=1)
+        self._central_root_layout = root_layout
 
         # ----------------------------------------------------------------
         # Status bar
@@ -824,7 +824,8 @@ class MainWindow(QMainWindow):
         else:
             # MISSING
             self._batch_missing_count[cam_id] = (
-                self._batch_missing_count.get(cam_id, 0) + 1
+                self._batch_missing_count.get(cam_id, 0)
+                + (count_result.expected_count - count_result.detected_count)
             )
             # Dispatch MissingEvent to the async I/O pipeline
             event = MissingEvent(
@@ -1277,162 +1278,102 @@ class MainWindow(QMainWindow):
 
     class _LoginWidget(QWidget):
         """
-        Compound header widget that shows authentication state.
+        Header button that reflects authentication state.
 
-        Three visual states:
-        ─────────────────────────────────────────────────────────────
-        no_auth   AD disabled.  Static chip: "Local User [Admin]".
-                  No interactive controls.
-
-        guest     AD enabled, nobody logged in yet.
-                  Shows an Apple-blue "Login" QPushButton.
-
-        logged_in AD enabled / local mode, real session active.
-                  Shows a glass-pill QPushButton chip.  Clicking it
-                  opens a popup menu: "Change Password" and "Log Off".
-                  The former separate Logout button is removed; the
-                  chip button replaces it.
-        ─────────────────────────────────────────────────────────────
-
-        The widget owns its own QHBoxLayout; the parent swaps the
-        whole widget in and out of the header bar so no external
-        widget references need updating.
-
-        Signals
-        -------
-        login_requested()
-            Emitted when the "Login" button is clicked.  The parent
-            window should open LoginDialog and call
-            on_login_succeeded() with the resulting session.
-
-        logout_requested()
-            Emitted when "Log Off" is chosen from the chip menu.
-            The parent should call on_logout() to clear the session
-            and transition back to guest state.
-
-        change_password_requested()
-            Emitted when "Change Password" is chosen from the chip
-            menu.  The parent should open ChangePasswordDialog.
+        - Not logged in / auto session: shows blue "Login" button.
+        - Logged in (any real session): shows the user's name as a
+          glass-pill chip; clicking opens Change Password / Log Off menu.
         """
 
         login_requested            = Signal()
         logout_requested           = Signal()
         change_password_requested  = Signal()
 
-        # Colours (match main Apple dark-mode palette)
-        _C_TEXT    = "#FFFFFF"
-        _C_MUTED   = "#8E8E93"
-        _C_BLUE    = "#0A84FF"
-        _C_SURFACE = "rgba(255,255,255,0.07)"
-
         def __init__(self, parent: Optional[QWidget] = None) -> None:
             super().__init__(parent)
             self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             self.setStyleSheet("background: transparent;")
 
-            self._layout = QHBoxLayout(self)
-            self._layout.setContentsMargins(0, 0, 0, 0)
-            self._layout.setSpacing(6)
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
 
-            # We use a QStackedWidget so we can flip between states without
-            # rebuilding the whole header layout.
-            self._stack = QStackedWidget(self)
-            self._layout.addWidget(self._stack)
+            self._btn = QPushButton("Login")
+            self._btn.setFixedHeight(32)
+            self._btn.clicked.connect(self._on_btn_clicked)
+            lay.addWidget(self._btn)
 
-            # ----------------------------------------------------------
-            # Page 0 — no_auth: static chip
-            # ----------------------------------------------------------
-            self._page_no_auth = QWidget()
-            p0_lay = QHBoxLayout(self._page_no_auth)
-            p0_lay.setContentsMargins(0, 0, 0, 0)
-            self._chip_no_auth = QLabel("")
-            self._chip_no_auth.setFont(QFont("Segoe UI", 10))
-            self._chip_no_auth.setStyleSheet(
-                f"color: {self._C_MUTED}; background: {self._C_SURFACE}; "
-                "border-radius: 8px; padding: 2px 10px;"
-            )
-            self._chip_no_auth.setToolTip("Authentication disabled — running as local administrator")
-            p0_lay.addWidget(self._chip_no_auth)
-            self._stack.addWidget(self._page_no_auth)   # index 0
+            self._logged_in = False
+            self._apply_login_style()
 
-            # ----------------------------------------------------------
-            # Page 1 — guest: Login button
-            # ----------------------------------------------------------
-            self._page_guest = QWidget()
-            p1_lay = QHBoxLayout(self._page_guest)
-            p1_lay.setContentsMargins(0, 0, 0, 0)
-            self._btn_login = QPushButton("Login")
-            self._btn_login.setObjectName("btn_batch_start")   # reuse Apple-blue
-            self._btn_login.setFixedHeight(28)
-            self._btn_login.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
-            self._btn_login.setToolTip("Click to authenticate via Active Directory")
-            self._btn_login.clicked.connect(self.login_requested)
-            p1_lay.addWidget(self._btn_login)
-            self._stack.addWidget(self._page_guest)   # index 1
-
-            # ----------------------------------------------------------
-            # Page 2 — logged_in: user chip button with popup menu
-            #
-            # The chip is a QPushButton styled to look identical to the
-            # former QLabel chip.  Clicking it opens a QMenu with:
-            #   - Change Password
-            #   ─────────────────
-            #   - Log Off
-            #
-            # The separate Logout button and vertical separator are
-            # intentionally removed — the chip button replaces both.
-            # ----------------------------------------------------------
-            self._page_logged_in = QWidget()
-            p2_lay = QHBoxLayout(self._page_logged_in)
-            p2_lay.setContentsMargins(0, 0, 0, 0)
-            p2_lay.setSpacing(0)
-
-            self._chip_logged_in = QPushButton("")
-            self._chip_logged_in.setFont(QFont("Segoe UI", 10))
-            # Glass-pill look identical to the old QLabel chip.
-            self._chip_logged_in.setStyleSheet(
-                f"QPushButton {{ color: {self._C_TEXT}; background: {self._C_SURFACE}; "
-                "border: none; border-radius: 8px; padding: 2px 10px; "
-                "min-height: 0; min-width: 0; font-weight: normal; }}"
-                f"QPushButton:hover {{ background: rgba(255,255,255,0.13); }}"
-                f"QPushButton:pressed {{ background: rgba(255,255,255,0.04); }}"
-            )
-            self._chip_logged_in.setToolTip("Click to change password or log off")
-            self._chip_logged_in.clicked.connect(self._on_chip_clicked)
-            p2_lay.addWidget(self._chip_logged_in)
-
-            self._stack.addWidget(self._page_logged_in)   # index 2
-
-            # Start in guest state by default; caller will call refresh().
-            self._stack.setCurrentIndex(1)
-
-        # ──────────────────────────────────────────────────────────────
-        # Public API
-        # ──────────────────────────────────────────────────────────────
+        # ── Public API ────────────────────────────────────────────────
 
         def set_no_auth(self, display_name: str, role_label: str) -> None:
-            """Switch to the static no-auth chip (AD disabled)."""
-            self._chip_no_auth.setText(f"{display_name}  [{role_label}]")
-            self._stack.setCurrentIndex(0)
+            """Static chip (non-interactive) — AD disabled, no login."""
+            self._logged_in = False
+            self._btn.setText(f"{display_name}  [{role_label}]")
+            self._apply_chip_style(enabled=False)
 
         def set_guest(self) -> None:
-            """Switch to the Login button (AD enabled, nobody logged in)."""
-            self._stack.setCurrentIndex(1)
+            """Show Login button — nobody signed in."""
+            self._logged_in = False
+            self._btn.setText("Login")
+            self._apply_login_style()
 
         def set_logged_in(self, display_name: str, role_label: str) -> None:
-            """Switch to the user chip button (click for Change Password / Log Off)."""
-            self._chip_logged_in.setText(f"{display_name}  [{role_label}]")
-            self._stack.setCurrentIndex(2)
+            """Show user chip — click opens Change Password / Log Off."""
+            self._logged_in = True
+            self._btn.setText(f"{display_name}  [{role_label}]")
+            self._apply_chip_style(enabled=True)
 
-        def _on_chip_clicked(self) -> None:
-            """
-            Show the user-action popup menu anchored below the chip button.
+        # ── Private ───────────────────────────────────────────────────
 
-            Menu actions:
-              Change Password  → emits change_password_requested
-              (separator)
-              Log Off          → emits logout_requested
-            """
+        def _apply_login_style(self) -> None:
+            self._btn.setEnabled(True)
+            self._btn.setToolTip("Click to sign in")
+            # Use objectName so the global QSS rule for btn_batch_start applies.
+            self._btn.setObjectName("btn_login")
+            self._btn.setStyleSheet("")     # let global QSS handle it
+            self._btn.style().unpolish(self._btn)
+            self._btn.style().polish(self._btn)
+            self._btn.updateGeometry()
+
+        def _apply_chip_style(self, enabled: bool) -> None:
+            self._btn.setEnabled(enabled)
+            self._btn.setToolTip(
+                "Click to change password or log off" if enabled
+                else "Running as local administrator"
+            )
+            self._btn.setObjectName("")     # clear special name
+            self._btn.setStyleSheet(
+                "QPushButton {"
+                "  color: #FFFFFF;"
+                "  background: rgba(255,255,255,0.11);"
+                "  border: 1px solid rgba(255,255,255,0.18);"
+                "  border-radius: 10px;"
+                "  padding: 0px 14px;"
+                "  font-size: 12px;"
+                "  font-weight: 500;"
+                "  min-height: 32px;"
+                "  min-width: 0px;"
+                "}"
+                "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+                "QPushButton:pressed { background: rgba(255,255,255,0.06); }"
+                "QPushButton:disabled {"
+                "  color: rgba(255,255,255,0.40);"
+                "  background: rgba(255,255,255,0.05);"
+                "}"
+            )
+            self._btn.style().unpolish(self._btn)
+            self._btn.style().polish(self._btn)
+            self._btn.updateGeometry()
+
+        def _on_btn_clicked(self) -> None:
+            if self._logged_in:
+                self._show_user_menu()
+            else:
+                self.login_requested.emit()
+
+        def _show_user_menu(self) -> None:
             menu = QMenu(self)
             menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -1441,9 +1382,7 @@ class MainWindow(QMainWindow):
             act_logout = menu.addAction("Log Off")
 
             chosen = menu.exec(
-                self._chip_logged_in.mapToGlobal(
-                    self._chip_logged_in.rect().bottomLeft()
-                )
+                self._btn.mapToGlobal(self._btn.rect().bottomLeft())
             )
 
             if chosen is act_change_pw:
@@ -1477,7 +1416,7 @@ class MainWindow(QMainWindow):
             self._login_widget.set_no_auth(
                 session.display_name, session.role_display()
             )
-        elif session is None or session.authenticated_via == "guest":
+        elif session is None or session.authenticated_via in ("guest", "auto"):
             # Not yet logged in — show Login button regardless of AD mode.
             self._login_widget.set_guest()
         else:
@@ -1517,20 +1456,20 @@ class MainWindow(QMainWindow):
 
         # Pass ldap_svc=None when AD is disabled; LoginDialog handles that gracefully.
         dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
-        result = dialog.exec()
+        dialog.exec()
 
-        if result == QDialog.DialogCode.Accepted and dialog.session is not None:
-            auth.set_session(dialog.session)
-            self._refresh_login_widget()
+        # auth.set_session() is called inside LoginDialog._on_auth_succeeded,
+        # so current_session already reflects the outcome — refresh unconditionally.
+        self._refresh_login_widget()
+
+        session = auth.current_session
+        if session is not None and session.authenticated_via not in ("guest", "auto", "no_auth"):
             logger.info(
                 "Login accepted via header button | user=%s role=%s via=%s",
-                dialog.session.username,
-                dialog.session.role.name,
-                dialog.session.authenticated_via,
+                session.username, session.role.name, session.authenticated_via,
             )
             self._status_bar.showMessage(
-                f"Logged in as {dialog.session.display_name} "
-                f"[{dialog.session.role_display()}]",
+                f"Logged in as {session.display_name} [{session.role_display()}]",
                 4000,
             )
         else:
@@ -1562,7 +1501,13 @@ class MainWindow(QMainWindow):
                 return
             self._batch_end()
 
-        auth.set_session(auth.create_guest_session())
+        import settings as _s
+        new_session = (
+            auth.create_auto_session()
+            if not _s.AUTH_LOGIN_REQUIRED
+            else auth.create_guest_session()
+        )
+        auth.set_session(new_session)
         logger.info("User logged out — guest session restored (Login button shown)")
 
         self._refresh_login_widget()
@@ -1598,11 +1543,182 @@ class MainWindow(QMainWindow):
 
     @Slot()
     @require_permission(PERM_CHANGE_SETTINGS)
+    def _reload_cameras(self) -> None:
+        """
+        Hot-swap the camera grid after the camera source list changes in Settings.
+
+        Stops all running services, tears down the old CameraPanel grid, rebuilds
+        it from the updated ``settings.CAMERAS`` list, and resets all per-camera
+        state.  The user must start a new batch to begin capturing.
+
+        Blocked when a batch is currently running — user must end the batch first.
+        """
+        if self._batch_running:
+            QMessageBox.warning(
+                self,
+                "Cameras Locked",
+                "A batch is currently running.\n\n"
+                "End the batch before changing camera sources.",
+            )
+            return
+
+        self._stop_all()
+
+        # Tear down old panels
+        for cam_id in list(self._camera_ids):
+            panel = self._panels.pop(cam_id, None)
+            if panel is not None:
+                self._grid.removeWidget(panel)
+                panel.deleteLater()
+
+        # Clear all per-camera tracking dicts
+        self._cam_services.clear()
+        self._inf_services.clear()
+        self._frame_queues.clear()
+        self._running_cameras.clear()
+        self._batch_ok_count.clear()
+        self._batch_missing_count.clear()
+        self._batch_total_detected.clear()
+
+        # Rebuild camera ID list from updated settings
+        self._camera_ids = list(range(len(settings.CAMERAS)))
+        for cam_id in self._camera_ids:
+            self._cam_services[cam_id]         = None
+            self._inf_services[cam_id]         = None
+            self._frame_queues[cam_id]         = queue.Queue(maxsize=settings.FRAME_QUEUE_SIZE)
+            self._batch_ok_count[cam_id]       = 0
+            self._batch_missing_count[cam_id]  = 0
+            self._batch_total_detected[cam_id] = 0
+
+        # Remove old grid widget from layout
+        self._central_root_layout.removeWidget(self._grid_widget)
+        self._grid_widget.deleteLater()
+
+        # Build new grid
+        rows, cols = compute_grid_dims(len(self._camera_ids))
+        self._grid = QGridLayout()
+        self._grid.setSpacing(8)
+        self._grid.setContentsMargins(10, 10, 10, 10)
+        for r in range(rows):
+            self._grid.setRowStretch(r, 1)
+        for c in range(cols):
+            self._grid.setColumnStretch(c, 1)
+        for idx, cam_id in enumerate(self._camera_ids):
+            panel = CameraPanel(camera_id=cam_id, parent=self)
+            self._grid.addWidget(panel, idx // cols, idx % cols)
+            self._panels[cam_id] = panel
+
+        self._grid_widget = QWidget()
+        self._grid_widget.setLayout(self._grid)
+        self._central_root_layout.addWidget(self._grid_widget, stretch=1)
+
+        # Reset global counter and title
+        self._global_total_detected = 0
+        self._update_total_counter()
+        self.setWindowTitle(f"QC System - {len(self._camera_ids)}-Camera Inspection")
+
+        logger.info("Camera grid reloaded | new cameras=%s", self._camera_ids)
+        self._status_bar.showMessage(
+            f"Cameras reloaded — {len(self._camera_ids)} source(s) configured. "
+            "Start a new batch to begin.", 6000
+        )
+
+    def _reload_model(self) -> None:
+        """
+        Hot-reload the ONNX inference model while cameras keep running.
+
+        Stops all InferenceService instances, then restarts them so they
+        pick up the updated ``settings.MODEL_PATH``.  CameraService threads
+        continue capturing frames throughout.
+        """
+        # Stop inference services only
+        for cam_id in self._camera_ids:
+            iv = self._inf_services.get(cam_id)
+            if iv is not None:
+                iv.stop()
+                if not iv.wait(5000):
+                    iv.terminate()
+                self._inf_services[cam_id] = None
+
+        # Restart inference for each camera that still has a running camera service
+        for cam_id in self._camera_ids:
+            if self._cam_services.get(cam_id) is not None:
+                iv = InferenceService(
+                    camera_id=cam_id,
+                    frame_queue=self._frame_queues[cam_id],
+                    batch_id_getter=self._get_batch_id,
+                    parent=self,
+                )
+                self._inf_services[cam_id] = iv
+                iv.frame_processed.connect(
+                    lambda cid, frame: app_signals.frame_ready.emit(cid, frame)
+                )
+                iv.result_ready.connect(self._on_inference_result)
+                iv.error_occurred.connect(
+                    lambda cid, msg: app_signals.error_occurred.emit(cid, msg)
+                )
+                iv.start()
+
+        logger.info("Model reloaded | path=%s", settings.MODEL_PATH)
+        self._status_bar.showMessage(
+            f"Model reloaded: {settings.MODEL_PATH}", 5000
+        )
+
+    def _reload_auth(self) -> None:
+        """
+        Reconfigure the authentication backend after AUTH_AD_ENABLED changes.
+
+        - AD enabled  → constructs a new LDAPAuthService.
+        - AD disabled → clears ldap_svc so the login dialog uses local-only mode.
+
+        In both cases the current session is reset to guest so the operator
+        must log in again under the new auth configuration.
+        """
+        if settings.AUTH_AD_ENABLED:
+            from auth.ldap_service import LDAPAuthService
+            self._ldap_svc = LDAPAuthService()
+            logger.info("Auth reloaded — Active Directory enabled")
+        else:
+            self._ldap_svc = None
+            logger.info("Auth reloaded — local accounts only (AD disabled)")
+
+        import settings as _s
+        new_session = (
+            auth.create_auto_session()
+            if not _s.AUTH_LOGIN_REQUIRED
+            else auth.create_guest_session()
+        )
+        auth.set_session(new_session)
+        self._refresh_login_widget()
+        self._status_bar.showMessage(
+            "Authentication settings changed — please log in again.", 6000
+        )
+
+    @require_permission(PERM_CHANGE_SETTINGS)
     def _on_open_settings(self) -> None:
-        """Open the live application settings dialog (Admin only)."""
+        """Open the live application settings dialog (Admin/Supervisor only)."""
         from ui.settings_dialog import SettingsDialog
+
+        old_cameras = list(settings.CAMERAS)
+        old_model   = settings.MODEL_PATH
+        old_ad      = settings.AUTH_AD_ENABLED
+
         dlg = SettingsDialog(parent=self)
-        dlg.exec()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        cameras_changed = list(settings.CAMERAS) != old_cameras
+        model_changed   = settings.MODEL_PATH    != old_model
+        auth_changed    = settings.AUTH_AD_ENABLED != old_ad
+
+        if cameras_changed:
+            self._reload_cameras()
+        elif model_changed:
+            # Only reload inference; skip full camera grid rebuild
+            self._reload_model()
+
+        if auth_changed:
+            self._reload_auth()
 
     @Slot()
     @require_permission(PERM_MANAGE_USERS)

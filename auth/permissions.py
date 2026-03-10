@@ -8,9 +8,10 @@ Three roles are defined in ascending privilege order:
     OPERATOR   -- Can only watch the live feed and view results.
                   Cannot start/stop batches, change settings, or generate reports.
 
-    SUPERVISOR -- Can start/stop batches, press Capture All, and view the PDF
-                  report after generation.  Cannot change application settings
-                  or manage user accounts.
+    SUPERVISOR -- Can start/stop batches, press Capture All, view the PDF
+                  report after generation, change application settings, and
+                  manage user accounts.  Cannot do anything reserved for ADMIN
+                  beyond that scope.
 
     ADMIN      -- Full access including settings dialog and user management.
 
@@ -95,7 +96,12 @@ PERM_CAMERA_CONTROL = "camera.control"
 
 ROLE_PERMISSIONS: dict[Role, FrozenSet[str]] = {
     Role.OPERATOR: frozenset({
-        # Operators can only observe
+        PERM_START_BATCH,
+        PERM_END_BATCH,
+        PERM_CAPTURE_ALL,
+        PERM_VIEW_REPORT,
+        PERM_EXPORT_REPORT,
+        PERM_CAMERA_CONTROL,
     }),
 
     Role.SUPERVISOR: frozenset({
@@ -104,6 +110,8 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[str]] = {
         PERM_CAPTURE_ALL,
         PERM_VIEW_REPORT,
         PERM_EXPORT_REPORT,
+        PERM_CHANGE_SETTINGS,
+        PERM_MANAGE_USERS,
         PERM_CAMERA_CONTROL,
     }),
 

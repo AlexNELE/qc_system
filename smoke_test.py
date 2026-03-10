@@ -515,8 +515,8 @@ try:
         f"role={op_session.role.name}",
     )
     record(
-        "OPERATOR session cannot start batch",
-        not op_session.can("batch.start"),
+        "OPERATOR session can start batch",
+        op_session.can("batch.start"),
         f"can_start={op_session.can('batch.start')}",
     )
 

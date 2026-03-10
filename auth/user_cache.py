@@ -567,7 +567,22 @@ class UserCacheDB:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            conn.executescript(_DDL)
+            try:
+                conn.executescript(_DDL)
+            except sqlite3.DatabaseError:
+                # File exists but is not a valid SQLite database (e.g. corrupted).
+                # Rename it as a backup and start fresh.
+                conn.close()
+                backup = self._db_path + ".corrupt"
+                try:
+                    os.replace(self._db_path, backup)
+                    logger.error(
+                        "DB file was corrupted — renamed to %s, starting fresh", backup
+                    )
+                except OSError as e:
+                    logger.error("Could not rename corrupted DB: %s", e)
+                conn = sqlite3.connect(self._db_path, check_same_thread=False)
+                conn.executescript(_DDL)
             conn.commit()
 
             # Migration: add new columns to existing databases.
@@ -583,12 +598,52 @@ class UserCacheDB:
                     # databases that were created after the schema was updated.
                     pass
 
+            self._seed_default_admin(conn)
+
             self._local.connection = conn
             logger.debug(
                 "UserCacheDB connection opened on thread %s",
                 threading.current_thread().name,
             )
         return self._local.connection
+
+    def _seed_default_admin(self, conn: sqlite3.Connection) -> None:
+        """
+        Ensure a built-in local administrator account always exists.
+
+        Username : admin
+        Password : test
+        Role     : ADMIN
+        is_local : 1
+
+        A cheap SELECT is checked first so that the expensive PBKDF2 hash
+        computation only happens once (on a fresh database).  After that,
+        every subsequent thread connection skips this method instantly.
+        If an admin changes the password via User Management the row is
+        preserved unchanged (this seed never overwrites an existing row).
+        """
+        try:
+            cur = conn.execute("SELECT 1 FROM user_cache WHERE username = 'admin'")
+            if cur.fetchone() is not None:
+                return   # already seeded — nothing to do
+
+            pw_hash = _hash_password("test")
+            now_utc = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_cache
+                    (username, display_name, email, ad_role, role_override,
+                     password_hash, last_login_utc, last_login_via,
+                     is_local, force_password_change)
+                VALUES ('admin', 'Administrator', '', 'ADMIN', NULL,
+                        ?, ?, 'local', 1, 0)
+                """,
+                (pw_hash, now_utc),
+            )
+            conn.commit()
+            logger.info("Default admin account seeded (username=admin)")
+        except sqlite3.Error as exc:
+            logger.error("_seed_default_admin error: %s", exc, exc_info=True)
 
     def close(self) -> None:
         """Close the connection on the calling thread."""
