@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 import settings
-from auth.ldap_service import LDAPAuthService, LDAPAuthError, LDAPUnavailableError
+from auth.ldap_service import LDAPAuthError, LDAPUnavailableError
 from auth.user_cache import UserCacheDB
 from auth.permissions import UserSession
 
@@ -100,14 +100,14 @@ class _AuthWorker(QThread):
         self,
         username: str,
         password: str,
-        ldap_service: LDAPAuthService,
+        ldap_service,   # LDAPAuthService | None
         user_cache: UserCacheDB,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._username     = username
         self._password     = password
-        self._ldap_service = ldap_service
+        self._ldap_service = ldap_service  # None when AD is disabled
         self._user_cache   = user_cache
 
     def run(self) -> None:
@@ -118,8 +118,10 @@ class _AuthWorker(QThread):
           1. If the username exists in the local cache AND is marked as a
              local account (``is_local == 1``), authenticate against the
              local cache directly — LDAP is never contacted for local accounts.
-          2. Otherwise attempt a live LDAP bind.
-          3. On LDAPUnavailableError fall back to the offline cache.
+          2. If ldap_service is None (AD disabled), authenticate ALL users
+             against the local cache only (local-only mode).
+          3. Otherwise attempt a live LDAP bind.
+          4. On LDAPUnavailableError fall back to the offline cache.
         """
         from auth.user_cache import OfflineAuthResult
 
@@ -137,7 +139,23 @@ class _AuthWorker(QThread):
                 self.succeeded.emit(result.session)
             return
 
-        # --- Step 2: live LDAP ----------------------------------------------
+        # --- Step 2: local-only mode (AD disabled) --------------------------
+        # When ldap_service is None, every user is authenticated solely against
+        # the local cache.  AD-synced users who have previously logged in via
+        # LDAP will work here via their cached credentials.
+        if self._ldap_service is None:
+            logger.debug("Local-only mode — authenticating via cache for user=%s", self._username)
+            result = self._user_cache.authenticate_offline(self._username, self._password)
+            if result is None:
+                self.failed.emit("Incorrect username or password.")
+                return
+            if result.force_password_change:
+                self.password_change_required.emit(result.session)
+            else:
+                self.succeeded.emit(result.session)
+            return
+
+        # --- Step 3: live LDAP ----------------------------------------------
         try:
             session = self._ldap_service.authenticate(self._username, self._password)
             # Persist/update local cache so offline login works next time
@@ -148,7 +166,7 @@ class _AuthWorker(QThread):
             self.succeeded.emit(session)
 
         except LDAPUnavailableError as unreach_exc:
-            # --- Step 3: offline cache fallback ----------------------------
+            # --- Step 4: offline cache fallback ----------------------------
             logger.warning("LDAP unreachable, trying offline cache: %s", unreach_exc)
             self.offline_fallback.emit()
             result = self._user_cache.authenticate_offline(self._username, self._password)
@@ -186,15 +204,19 @@ class _ConnectivityProbe(QThread):
     Quick TCP probe to show online/offline badge before the user presses Login.
 
     Does NOT bind; only checks whether the LDAP port is open.
+    Not used in local-only mode (ldap_service=None).
     """
 
     result_ready = Signal(bool)  # True = online
 
-    def __init__(self, ldap_service: LDAPAuthService, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, ldap_service, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._ldap_service = ldap_service
 
     def run(self) -> None:
+        if self._ldap_service is None:
+            self.result_ready.emit(False)
+            return
         reachable = self._ldap_service.is_server_reachable()
         self.result_ready.emit(reachable)
 
@@ -205,7 +227,14 @@ class _ConnectivityProbe(QThread):
 
 class LoginDialog(QDialog):
     """
-    Modal login dialog shown before MainWindow is displayed.
+    Modal login dialog shown when the header "Login" button is pressed.
+
+    Supports two modes:
+    - AD mode (ldap_service is not None): probes LDAP connectivity, falls
+      back to offline cache on LDAPUnavailableError.
+    - Local-only mode (ldap_service is None): all authentication is done
+      against the local user cache only.  The connectivity badge is replaced
+      with a "Local accounts only" message.
 
     After ``exec()`` returns ``QDialog.DialogCode.Accepted``, read
     ``dialog.session`` to obtain the authenticated ``UserSession``.
@@ -213,22 +242,22 @@ class LoginDialog(QDialog):
     Parameters
     ----------
     ldap_service:
-        Pre-constructed LDAPAuthService.  Passed in (not constructed here)
-        so the caller can inject a mock for testing.
+        Pre-constructed LDAPAuthService, or None when AD is disabled.
     user_cache:
-        Pre-constructed UserCacheDB for offline fallback.
+        Pre-constructed UserCacheDB.
     parent:
         Qt parent widget (usually None at startup).
     """
 
     def __init__(
         self,
-        ldap_service: LDAPAuthService,
+        ldap_service,   # LDAPAuthService | None
         user_cache: UserCacheDB,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._ldap_service  = ldap_service
+        self._local_only    = (ldap_service is None)
         self._user_cache    = user_cache
         self._session: Optional[UserSession] = None
         self._auth_worker: Optional[_AuthWorker] = None
@@ -246,7 +275,12 @@ class LoginDialog(QDialog):
         )
 
         self._build_ui()
-        self._start_connectivity_probe()
+        if not self._local_only:
+            self._start_connectivity_probe()
+        else:
+            # Local-only mode: skip AD probe, show static info message
+            self._connectivity_label.setText("Local accounts only")
+            self._connectivity_label.setStyleSheet(f"color: {_C_MUTED};")
 
     # ------------------------------------------------------------------
     # Public
@@ -298,7 +332,8 @@ class LoginDialog(QDialog):
         root.addSpacing(20)
 
         # ── Username ──────────────────────────────────────────────────
-        un_label = QLabel("Username (SAMAccountName)")
+        un_label_text = "Username" if self._local_only else "Username (SAMAccountName)"
+        un_label = QLabel(un_label_text)
         un_label.setFont(QFont("Segoe UI", 10))
         un_label.setStyleSheet(f"color: {_C_MUTED};")
         root.addWidget(un_label)

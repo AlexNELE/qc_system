@@ -368,10 +368,10 @@ if __name__ == "__main__":
     else:
         logger.info(
             "Active Directory disabled (AUTH_AD_ENABLED=False) — "
-            "starting without authentication"
+            "starting with guest session so local accounts can log in via the header Login button"
         )
         ldap_svc = None
-        session = auth.create_no_auth_session()
+        session = auth.create_guest_session()
 
     auth.set_session(session)
     logger.info(

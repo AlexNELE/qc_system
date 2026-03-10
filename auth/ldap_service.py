@@ -216,6 +216,88 @@ class LDAPAuthService:
         )
         return session
 
+    def change_password(
+        self,
+        username: str,
+        old_password: str,
+        new_password: str,
+    ) -> None:
+        """
+        Change the user's Active Directory password via LDAP extended operation.
+
+        Uses ldap3's ``extend.microsoft.modify_password()`` which is the
+        standard method for AD.  Requires LDAPS or STARTTLS — plain LDAP
+        (no TLS) is rejected by AD for password change operations.
+
+        Parameters
+        ----------
+        username:
+            SAMAccountName of the user whose password should be changed.
+        old_password:
+            Current plain-text password (used to bind and verify identity).
+        new_password:
+            New plain-text password to set.
+
+        Raises
+        ------
+        LDAPAuthError
+            Wrong current password, complexity policy violation, or account
+            restriction.
+        LDAPUnavailableError
+            No LDAP server reachable.
+        LDAPConfigError
+            TLS is not configured — AD requires a secure channel for password
+            changes.  Set ``LDAP_USE_TLS`` or ``LDAP_USE_SSL`` to True.
+        """
+        if not self._use_tls and not self._use_ssl:
+            raise LDAPConfigError(
+                "AD requires a secure channel (TLS or SSL) for password changes. "
+                "Set LDAP_USE_TLS or LDAP_USE_SSL to True in settings.json."
+            )
+
+        username = username.strip().lower()
+        upn = f"{username}@{self._domain}"
+
+        import ldap3
+        import ldap3.core.exceptions as ldap_exc
+
+        # Step 1: bind with the old password to verify identity and get a conn
+        conn = self._connect_and_bind(upn, old_password)
+        try:
+            # Step 2: look up the full DN — modify_password requires the DN
+            search_filter = f"(sAMAccountName={ldap3.utils.conv.escape_filter_chars(username)})"
+            conn.search(
+                search_base   = self._base_dn,
+                search_filter = search_filter,
+                search_scope  = ldap3.SUBTREE,
+                attributes    = ["distinguishedName"],
+            )
+            if not conn.entries:
+                raise LDAPAuthError(
+                    f"User '{username}' not found in Active Directory."
+                )
+            user_dn = conn.entries[0].entry_dn
+
+            # Step 3: perform the password change via the Microsoft extension
+            try:
+                conn.extend.microsoft.modify_password(user_dn, new_password, old_password)
+            except ldap_exc.LDAPUnwillingToPerformResult as exc:
+                raise LDAPAuthError(
+                    "Password does not meet complexity requirements or is too recent."
+                ) from exc
+            except ldap_exc.LDAPInvalidCredentialsResult as exc:
+                raise LDAPAuthError("Current password is incorrect.") from exc
+
+            logger.info(
+                "AD password changed successfully | user=%s dn=%s", username, user_dn
+            )
+
+        finally:
+            try:
+                conn.unbind()
+            except Exception:  # noqa: BLE001 — unbind errors are non-critical
+                pass
+
     def is_server_reachable(self) -> bool:
         """
         Quick TCP probe of the first LDAP server to test connectivity.

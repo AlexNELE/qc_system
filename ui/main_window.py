@@ -342,13 +342,14 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("File")
 
         # --- Session actions ---
-        # Logout is only meaningful when Active Directory is enabled.
-        # In no-auth mode the item is hidden to avoid confusing operators.
+        # Logout is meaningful whenever there is a login flow — which is now
+        # always the case: even when AUTH_AD_ENABLED=False, local accounts can
+        # log in via the header Login button.  The action is therefore always
+        # visible and always wired to _on_logout.
         logout_action = QAction("Logout", self)
         logout_action.setShortcut("Ctrl+Shift+L")
         logout_action.setToolTip("Log out the current user and restore the Login button.")
         logout_action.triggered.connect(self._on_logout)
-        logout_action.setVisible(settings.AUTH_AD_ENABLED)
         file_menu.addAction(logout_action)
 
         file_menu.addSeparator()
@@ -494,6 +495,7 @@ class MainWindow(QMainWindow):
         self._login_widget = MainWindow._LoginWidget(parent=self)
         self._login_widget.login_requested.connect(self._on_login_button_clicked)
         self._login_widget.logout_requested.connect(self._on_logout)
+        self._login_widget.change_password_requested.connect(self._on_change_password)
         hbar.addWidget(self._login_widget)
 
         root_layout.addWidget(header)
@@ -1285,9 +1287,11 @@ class MainWindow(QMainWindow):
         guest     AD enabled, nobody logged in yet.
                   Shows an Apple-blue "Login" QPushButton.
 
-        logged_in AD enabled, real AD / cache session active.
-                  Shows: "<DisplayName>  [<Role>]   | Logout"
-                  Logout is a flat QPushButton styled as a link.
+        logged_in AD enabled / local mode, real session active.
+                  Shows a glass-pill QPushButton chip.  Clicking it
+                  opens a popup menu: "Change Password" and "Log Off".
+                  The former separate Logout button is removed; the
+                  chip button replaces it.
         ─────────────────────────────────────────────────────────────
 
         The widget owns its own QHBoxLayout; the parent swaps the
@@ -1302,13 +1306,18 @@ class MainWindow(QMainWindow):
             on_login_succeeded() with the resulting session.
 
         logout_requested()
-            Emitted when "Logout" is clicked.  The parent should
-            call on_logout() to clear the session and transition
-            back to guest state.
+            Emitted when "Log Off" is chosen from the chip menu.
+            The parent should call on_logout() to clear the session
+            and transition back to guest state.
+
+        change_password_requested()
+            Emitted when "Change Password" is chosen from the chip
+            menu.  The parent should open ChangePasswordDialog.
         """
 
-        login_requested  = Signal()
-        logout_requested = Signal()
+        login_requested            = Signal()
+        logout_requested           = Signal()
+        change_password_requested  = Signal()
 
         # Colours (match main Apple dark-mode palette)
         _C_TEXT    = "#FFFFFF"
@@ -1362,41 +1371,35 @@ class MainWindow(QMainWindow):
             self._stack.addWidget(self._page_guest)   # index 1
 
             # ----------------------------------------------------------
-            # Page 2 — logged_in: user chip + logout
+            # Page 2 — logged_in: user chip button with popup menu
+            #
+            # The chip is a QPushButton styled to look identical to the
+            # former QLabel chip.  Clicking it opens a QMenu with:
+            #   - Change Password
+            #   ─────────────────
+            #   - Log Off
+            #
+            # The separate Logout button and vertical separator are
+            # intentionally removed — the chip button replaces both.
             # ----------------------------------------------------------
             self._page_logged_in = QWidget()
             p2_lay = QHBoxLayout(self._page_logged_in)
             p2_lay.setContentsMargins(0, 0, 0, 0)
-            p2_lay.setSpacing(8)
+            p2_lay.setSpacing(0)
 
-            self._chip_logged_in = QLabel("")
+            self._chip_logged_in = QPushButton("")
             self._chip_logged_in.setFont(QFont("Segoe UI", 10))
+            # Glass-pill look identical to the old QLabel chip.
             self._chip_logged_in.setStyleSheet(
-                f"color: {self._C_TEXT}; background: {self._C_SURFACE}; "
-                "border-radius: 8px; padding: 2px 10px;"
+                f"QPushButton {{ color: {self._C_TEXT}; background: {self._C_SURFACE}; "
+                "border: none; border-radius: 8px; padding: 2px 10px; "
+                "min-height: 0; min-width: 0; font-weight: normal; }}"
+                f"QPushButton:hover {{ background: rgba(255,255,255,0.13); }}"
+                f"QPushButton:pressed {{ background: rgba(255,255,255,0.04); }}"
             )
-            self._chip_logged_in.setToolTip("Current operator session")
+            self._chip_logged_in.setToolTip("Click to change password or log off")
+            self._chip_logged_in.clicked.connect(self._on_chip_clicked)
             p2_lay.addWidget(self._chip_logged_in)
-
-            # Thin vertical separator
-            vsep = QFrame()
-            vsep.setFrameShape(QFrame.Shape.VLine)
-            vsep.setFixedWidth(1)
-            vsep.setFixedHeight(20)
-            vsep.setStyleSheet("background-color: rgba(255,255,255,0.20); border: none;")
-            p2_lay.addWidget(vsep)
-
-            self._btn_logout = QPushButton("Logout")
-            self._btn_logout.setFlat(True)
-            self._btn_logout.setFont(QFont("Segoe UI", 10))
-            self._btn_logout.setStyleSheet(
-                f"QPushButton {{ color: {self._C_MUTED}; background: transparent; "
-                "border: none; padding: 2px 4px; min-width: 0; }}"
-                f"QPushButton:hover {{ color: {self._C_TEXT}; }}"
-            )
-            self._btn_logout.setToolTip("Log out the current user")
-            self._btn_logout.clicked.connect(self.logout_requested)
-            p2_lay.addWidget(self._btn_logout)
 
             self._stack.addWidget(self._page_logged_in)   # index 2
 
@@ -1417,9 +1420,36 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
 
         def set_logged_in(self, display_name: str, role_label: str) -> None:
-            """Switch to the user chip + Logout (AD enabled, real session)."""
+            """Switch to the user chip button (click for Change Password / Log Off)."""
             self._chip_logged_in.setText(f"{display_name}  [{role_label}]")
             self._stack.setCurrentIndex(2)
+
+        def _on_chip_clicked(self) -> None:
+            """
+            Show the user-action popup menu anchored below the chip button.
+
+            Menu actions:
+              Change Password  → emits change_password_requested
+              (separator)
+              Log Off          → emits logout_requested
+            """
+            menu = QMenu(self)
+            menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+            act_change_pw = menu.addAction("Change Password")
+            menu.addSeparator()
+            act_logout = menu.addAction("Log Off")
+
+            chosen = menu.exec(
+                self._chip_logged_in.mapToGlobal(
+                    self._chip_logged_in.rect().bottomLeft()
+                )
+            )
+
+            if chosen is act_change_pw:
+                self.change_password_requested.emit()
+            elif chosen is act_logout:
+                self.logout_requested.emit()
 
     # ------------------------------------------------------------------
     # Auth / session helpers
@@ -1432,28 +1462,26 @@ class MainWindow(QMainWindow):
         Called once after _build_ui() completes and after every
         login / logout event so the widget always reflects reality.
 
-        Three cases:
+        Unified logic (applies regardless of AUTH_AD_ENABLED):
+        - session.authenticated_via == 'no_auth'   -> show static chip
+              (reserved for future deployments; not reached from main.py)
         - session is None or authenticated_via == 'guest'
-              and AUTH_AD_ENABLED is True  -> show Login button
-        - authenticated_via == 'no_auth'   -> show static chip
-        - any other session                -> show user chip + Logout
+                                                   -> show Login button
+        - any other authenticated_via              -> show user chip with
+              popup menu (Change Password + Log Off)
         """
         session = auth.current_session
 
-        if not settings.AUTH_AD_ENABLED:
-            # No-auth mode: static chip, no interactive controls.
-            if session is not None:
-                self._login_widget.set_no_auth(
-                    session.display_name, session.role_display()
-                )
-            else:
-                self._login_widget.set_no_auth("Local User", "Administrator")
-            return
-
-        # AD enabled path
-        if session is None or session.authenticated_via == "guest":
+        if session is not None and session.authenticated_via == "no_auth":
+            # Static no-interaction chip — AD fully disabled, no local login.
+            self._login_widget.set_no_auth(
+                session.display_name, session.role_display()
+            )
+        elif session is None or session.authenticated_via == "guest":
+            # Not yet logged in — show Login button regardless of AD mode.
             self._login_widget.set_guest()
         else:
+            # Real session (ldap, cache, or local) — show user chip with menu.
             self._login_widget.set_logged_in(
                 session.display_name, session.role_display()
             )
@@ -1467,23 +1495,27 @@ class MainWindow(QMainWindow):
         """
         Open the LoginDialog modally when the header "Login" button is pressed.
 
-        Uses the ``_ldap_svc`` / ``_user_cache`` instances stored at
-        construction time (built once in main.py and passed in).
+        Works in two modes:
+        - AD mode  (self._ldap_svc is not None): full LDAP + cache flow.
+        - Local-only mode (self._ldap_svc is None): passes ldap_svc=None so
+          LoginDialog authenticates entirely against the local user cache.
+          This allows locally-created accounts to log in when AD is disabled.
 
-        On success: sets the global session, updates all permission-gated
-        buttons by refreshing the widget, and logs the event.
+        On success: sets the global session, refreshes the header widget so
+        all permission-gated buttons reflect the new role, and logs the event.
 
         On cancellation: no change — guest session remains active.
         """
         from ui.login_dialog import LoginDialog
 
-        if self._ldap_svc is None or self._user_cache is None:
+        # _user_cache is always required; _ldap_svc may be None in local-only mode.
+        if self._user_cache is None:
             logger.error(
-                "_on_login_button_clicked called but ldap_svc/user_cache are None "
-                "(this should only happen in no-auth mode which has no Login button)"
+                "_on_login_button_clicked called but user_cache is None — cannot authenticate"
             )
             return
 
+        # Pass ldap_svc=None when AD is disabled; LoginDialog handles that gracefully.
         dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
         result = dialog.exec()
 
@@ -1510,12 +1542,12 @@ class MainWindow(QMainWindow):
         Log out the current operator and return to guest state.
 
         If a batch is running, prompts the operator before stopping it.
-        After logout the header shows the "Login" button again.
+        After logout the header shows the "Login" button again so the
+        operator (or a different user) can re-authenticate.
         The application does NOT close — cameras continue running
         (if a batch was not stopped) so the feed remains visible.
 
-        When AUTH_AD_ENABLED is False this method is not reachable
-        (there is no Logout button and the menu item is hidden).
+        Works in both AD-enabled and local-only (AUTH_AD_ENABLED=False) modes.
         """
         if self._batch_running:
             reply = QMessageBox.question(
@@ -1531,10 +1563,38 @@ class MainWindow(QMainWindow):
             self._batch_end()
 
         auth.set_session(auth.create_guest_session())
-        logger.info("User logged out — guest session restored")
+        logger.info("User logged out — guest session restored (Login button shown)")
 
         self._refresh_login_widget()
         self._status_bar.showMessage("Logged out — click Login to sign in again", 4000)
+
+    @Slot()
+    def _on_change_password(self) -> None:
+        """
+        Open the ChangePasswordDialog for the currently logged-in user.
+
+        Available to any authenticated session (ldap, cache, or local).
+        The dialog itself enforces that the old password is correct before
+        accepting the new one.
+
+        This slot is connected to ``_login_widget.change_password_requested``
+        which is emitted by the chip button popup menu.
+        """
+        session = auth.current_session
+        if session is None or session.authenticated_via in ("guest", "no_auth"):
+            # Not actually logged in — nothing to change
+            logger.warning("_on_change_password called with no active session")
+            return
+
+        from ui.change_password_dialog import ChangePasswordDialog
+
+        dlg = ChangePasswordDialog(
+            session    = session,
+            user_cache = self._user_cache,
+            ldap_svc   = self._ldap_svc,
+            parent     = self,
+        )
+        dlg.exec()
 
     @Slot()
     @require_permission(PERM_CHANGE_SETTINGS)
