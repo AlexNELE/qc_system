@@ -67,7 +67,14 @@ a = Analysis(
         'snap7.client',
         'snap7.util',
         'snap7.types',
-        # PROFINET IO Device stack (Mode B) — scapy has many dynamic layer imports
+        # PROFINET IO Device stack (Mode B) — lazy imports, must be listed explicitly
+        'services.profinet_service',
+        'services.profinet_io',
+        'services.profinet_io.constants',
+        'services.profinet_io.dcp',
+        'services.profinet_io.cm',
+        'services.profinet_io.rt',
+        # scapy has many dynamic layer imports
         'scapy',
         'scapy.all',
         'scapy.layers.l2',
