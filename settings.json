@@ -1,9 +1,11 @@
 {
     "cameras": [
         0,
-        1
+        1,
+        2,
+        3
     ],
-    "expected_count": 150,
+    "expected_count": 160,
     "model_path": "models/yolov8_model.onnx",
     "conf_threshold": 0.5,
     "iou_threshold": 0.45,
@@ -12,10 +14,31 @@
     "camera_reconnect_max": 30.0,
     "save_annotated_images": true,
     "log_level": "DEBUG",
+    "plc": {
+        "enabled": true,
+        "ip": "192.168.0.1",
+        "rack": 0,
+        "slot": 1,
+        "db_number": 100,
+        "poll_interval_ms": 50,
+        "reconnect_delay": 3.0,
+        "reconnect_max": 30.0
+    },
+  "profinet": {
+    "enabled": true,
+    "interface": "Ethernet",
+    "station_name": "qc-inspection-sys",
+    "mac_address": "",
+    "ip_address": "192.168.0.2",
+    "subnet_mask": "255.255.255.0",
+    "gateway": "192.168.0.1",
+    "cycle_time_ms": 4,
+    "watchdog_ms": 200
+  },
     "auth": {
         "login_required": true,
-        "active_directory_enabled": true,
-        "no_auth_default_role": "OPERATOR",
+        "active_directory_enabled":true,
+        "no_auth_default_role": "ADMIN",
         "ldap_servers": [
             "dc1.example.com",
             "dc2.example.com"

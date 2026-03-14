@@ -205,6 +205,7 @@ class SettingsDialog(QDialog):
         self._build_tab_cameras()
         self._build_tab_model()
         self._build_tab_system()
+        self._build_tab_plc()
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -381,6 +382,97 @@ class SettingsDialog(QDialog):
         lay.addStretch()
         self._tabs.addTab(page, "System")
 
+    def _build_tab_plc(self) -> None:
+        page = QWidget()
+        lay  = QVBoxLayout(page)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(12)
+
+        # Enable toggle
+        self._plc_enabled_chk = QCheckBox("Enable Siemens S7-1500 PLC interface")
+        lay.addWidget(self._plc_enabled_chk)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"QFrame {{ background-color: {_C_SEP}; border: none; }}")
+        lay.addWidget(sep)
+
+        # PLC IP address
+        lay.addWidget(_make_label("PLC IP address"))
+        self._plc_ip_edit = QLineEdit()
+        self._plc_ip_edit.setMinimumHeight(34)
+        self._plc_ip_edit.setPlaceholderText("192.168.0.1")
+        lay.addWidget(self._plc_ip_edit)
+
+        # Rack and Slot (side by side)
+        rack_slot_row = QHBoxLayout()
+        rack_col = QVBoxLayout()
+        rack_col.setSpacing(4)
+        rack_col.addWidget(_make_label("Rack (S7-1500 = 0)"))
+        self._plc_rack_spin = QSpinBox()
+        self._plc_rack_spin.setRange(0, 7)
+        self._plc_rack_spin.setMinimumHeight(34)
+        rack_col.addWidget(self._plc_rack_spin)
+
+        slot_col = QVBoxLayout()
+        slot_col.setSpacing(4)
+        slot_col.addWidget(_make_label("Slot (S7-1500 CPU = 1)"))
+        self._plc_slot_spin = QSpinBox()
+        self._plc_slot_spin.setRange(0, 31)
+        self._plc_slot_spin.setMinimumHeight(34)
+        slot_col.addWidget(self._plc_slot_spin)
+
+        rack_slot_row.addLayout(rack_col)
+        rack_slot_row.addLayout(slot_col)
+        lay.addLayout(rack_slot_row)
+
+        # DB number
+        lay.addWidget(_make_label("Data Block number (e.g. 100 for DB100)"))
+        self._plc_db_spin = QSpinBox()
+        self._plc_db_spin.setRange(1, 65535)
+        self._plc_db_spin.setMinimumHeight(34)
+        lay.addWidget(self._plc_db_spin)
+
+        # Poll interval
+        lay.addWidget(_make_label("Poll interval (ms) — read/write cycle period"))
+        self._plc_poll_spin = QSpinBox()
+        self._plc_poll_spin.setRange(10, 1000)
+        self._plc_poll_spin.setSuffix(" ms")
+        self._plc_poll_spin.setMinimumHeight(34)
+        lay.addWidget(self._plc_poll_spin)
+
+        # Reconnect delay
+        reconnect_row = QHBoxLayout()
+        delay_col = QVBoxLayout()
+        delay_col.setSpacing(4)
+        delay_col.addWidget(_make_label("Initial reconnect delay (s)"))
+        self._plc_reconnect_spin = QDoubleSpinBox()
+        self._plc_reconnect_spin.setRange(0.5, 60.0)
+        self._plc_reconnect_spin.setSingleStep(0.5)
+        self._plc_reconnect_spin.setDecimals(1)
+        self._plc_reconnect_spin.setMinimumHeight(34)
+        delay_col.addWidget(self._plc_reconnect_spin)
+
+        max_col = QVBoxLayout()
+        max_col.setSpacing(4)
+        max_col.addWidget(_make_label("Max reconnect delay (s)"))
+        self._plc_reconnect_max_spin = QDoubleSpinBox()
+        self._plc_reconnect_max_spin.setRange(5.0, 300.0)
+        self._plc_reconnect_max_spin.setSingleStep(1.0)
+        self._plc_reconnect_max_spin.setDecimals(1)
+        self._plc_reconnect_max_spin.setMinimumHeight(34)
+        max_col.addWidget(self._plc_reconnect_max_spin)
+
+        reconnect_row.addLayout(delay_col)
+        reconnect_row.addLayout(max_col)
+        lay.addLayout(reconnect_row)
+
+        lay.addWidget(_restart_banner("PLC settings require a full application restart to take effect."))
+
+        lay.addStretch()
+        self._tabs.addTab(page, "PLC")
+
     # ------------------------------------------------------------------
     # Load current values into widgets
     # ------------------------------------------------------------------
@@ -417,6 +509,16 @@ class SettingsDialog(QDialog):
         role_idx = self._no_auth_role_combo.findText(role_str)
         if role_idx >= 0:
             self._no_auth_role_combo.setCurrentIndex(role_idx)
+
+        # PLC tab
+        self._plc_enabled_chk.setChecked(settings.PLC_ENABLED)
+        self._plc_ip_edit.setText(settings.PLC_IP)
+        self._plc_rack_spin.setValue(settings.PLC_RACK)
+        self._plc_slot_spin.setValue(settings.PLC_SLOT)
+        self._plc_db_spin.setValue(settings.PLC_DB_NUMBER)
+        self._plc_poll_spin.setValue(settings.PLC_POLL_INTERVAL_MS)
+        self._plc_reconnect_spin.setValue(settings.PLC_RECONNECT_DELAY)
+        self._plc_reconnect_max_spin.setValue(settings.PLC_RECONNECT_MAX)
 
     # ------------------------------------------------------------------
     # Slots
@@ -502,6 +604,21 @@ class SettingsDialog(QDialog):
         class_id      = self._class_id_spin.value()
         save_annotated = self._save_annotated_chk.isChecked()
 
+        # PLC settings
+        plc_enabled      = self._plc_enabled_chk.isChecked()
+        plc_ip           = self._plc_ip_edit.text().strip()
+        plc_rack         = self._plc_rack_spin.value()
+        plc_slot         = self._plc_slot_spin.value()
+        plc_db           = self._plc_db_spin.value()
+        plc_poll         = self._plc_poll_spin.value()
+        plc_reconnect    = self._plc_reconnect_spin.value()
+        plc_reconnect_max = self._plc_reconnect_max_spin.value()
+
+        if plc_enabled and not plc_ip:
+            self._show_error("PLC IP address cannot be empty when PLC is enabled.")
+            self._tabs.setCurrentIndex(4)
+            return
+
         # ── Build merged settings dict ────────────────────────────────
         try:
             current_json: dict = json.loads(
@@ -528,6 +645,20 @@ class SettingsDialog(QDialog):
         auth_section["no_auth_default_role"]     = no_auth_role
         current_json["auth"] = auth_section
 
+        # Merge PLC sub-section
+        plc_section = current_json.get("plc", {})
+        plc_section.update({
+            "enabled":          plc_enabled,
+            "ip":               plc_ip,
+            "rack":             plc_rack,
+            "slot":             plc_slot,
+            "db_number":        plc_db,
+            "poll_interval_ms": plc_poll,
+            "reconnect_delay":  round(plc_reconnect, 1),
+            "reconnect_max":    round(plc_reconnect_max, 1),
+        })
+        current_json["plc"] = plc_section
+
         # ── Write to disk ─────────────────────────────────────────────
         try:
             settings.CONFIG_PATH.write_text(
@@ -551,6 +682,16 @@ class SettingsDialog(QDialog):
         settings.AUTH_AD_ENABLED       = ad_enabled
         settings.AUTH_LOGIN_REQUIRED   = login_required
         settings.AUTH_NO_AUTH_DEFAULT_ROLE = no_auth_role
+
+        # Apply PLC settings to live module (restart required for PLCService itself)
+        settings.PLC_ENABLED          = plc_enabled
+        settings.PLC_IP               = plc_ip
+        settings.PLC_RACK             = plc_rack
+        settings.PLC_SLOT             = plc_slot
+        settings.PLC_DB_NUMBER        = plc_db
+        settings.PLC_POLL_INTERVAL_MS = plc_poll
+        settings.PLC_RECONNECT_DELAY  = plc_reconnect
+        settings.PLC_RECONNECT_MAX    = plc_reconnect_max
 
         numeric_level = getattr(logging, log_level.upper(), logging.DEBUG)
         logging.getLogger().setLevel(numeric_level)

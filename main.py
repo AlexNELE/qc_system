@@ -364,17 +364,15 @@ if __name__ == "__main__":
         )
         from auth.ldap_service import LDAPAuthService
         ldap_svc = LDAPAuthService()
-    else:
-        logger.info(
-            "Active Directory disabled (AUTH_AD_ENABLED=False) — "
-            "starting with guest session so local accounts can log in via the header Login button"
-        )
-        ldap_svc = None
-
-    if _settings.AUTH_LOGIN_REQUIRED:
         session = auth.create_guest_session()
     else:
-        session = auth.create_auto_session()
+        logger.info(
+            "Active Directory disabled — creating no-auth session "
+            "(role=%s, header chip shown immediately)",
+            _settings.AUTH_NO_AUTH_DEFAULT_ROLE,
+        )
+        ldap_svc = None
+        session = auth.create_no_auth_session()
 
     auth.set_session(session)
     logger.info(

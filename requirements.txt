@@ -12,3 +12,14 @@ ldap3>=2.9.1
 # If not installed, auth/user_cache.py falls back to PBKDF2-HMAC-SHA256 (stdlib).
 # Uncomment to enable:
 # bcrypt>=4.1.0
+
+# Siemens S7-1500 PLC interface (ISO TCP via snap7).
+# Only required when plc.enabled = true in settings.json.
+# The snap7 native DLL is bundled with the wheel on Windows (>= 1.3).
+# Uncomment to enable:
+# python-snap7>=1.3
+
+# PROFINET IO Device stack (Mode B) — raw Ethernet frames on Windows via Npcap.
+# Npcap must be installed manually (requires admin / driver install):
+#   Download from https://npcap.com and run the installer as Administrator.
+scapy>=2.5.0

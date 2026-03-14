@@ -326,6 +326,58 @@ LDAP_CONNECT_TIMEOUT: float = float(_auth_cfg.get("ldap_connect_timeout", 5.0))
 USER_CACHE_DB_PATH: str = str(_BASE_DIR / "user_cache.db")
 
 # ===========================================================================
+# 7b. Siemens S7-1500 PLC interface
+#     IT-configurable via the "plc" section of settings.json.
+#
+#     settings.json "plc" keys (all optional — defaults shown):
+#       enabled           : false — set true to activate the PLC thread
+#       ip                : "192.168.0.1" — PLC Ethernet interface IP address
+#       rack              : 0  — PLC rack number (S7-1500 is always 0)
+#       slot              : 1  — PLC slot number (S7-1500 CPU is always 1)
+#       db_number         : 100 — Data Block number (DB100 by default)
+#       poll_interval_ms  : 50  — read/write cycle period in milliseconds
+#       reconnect_delay   : 3.0 — initial reconnect wait in seconds
+#       reconnect_max     : 30.0 — maximum reconnect back-off cap in seconds
+# ===========================================================================
+_plc_cfg: dict = _cfg.get("plc", {})
+
+PLC_ENABLED:          bool  = bool(_plc_cfg.get("enabled", False))
+PLC_IP:               str   = str(_plc_cfg.get("ip", "192.168.0.1"))
+PLC_RACK:             int   = int(_plc_cfg.get("rack", 0))
+PLC_SLOT:             int   = int(_plc_cfg.get("slot", 1))
+PLC_DB_NUMBER:        int   = int(_plc_cfg.get("db_number", 100))
+PLC_POLL_INTERVAL_MS: int   = int(_plc_cfg.get("poll_interval_ms", 50))
+PLC_RECONNECT_DELAY:  float = float(_plc_cfg.get("reconnect_delay", 3.0))
+PLC_RECONNECT_MAX:    float = float(_plc_cfg.get("reconnect_max", 30.0))
+
+# ===========================================================================
+# 7c. PROFINET IO Device interface (Mode B)
+#     IT-configurable via the "profinet" section of settings.json.
+#
+#     settings.json "profinet" keys (all optional — defaults shown):
+#       enabled          : false    — set true to activate as PROFINET IO Device
+#       interface        : ""       — OS network interface name (e.g. "Ethernet", "eth0")
+#       station_name     : "qc-inspection-sys" — PROFINET station name (DNS label)
+#       mac_address      : ""       — MAC address of the selected interface (AA:BB:CC:DD:EE:FF)
+#       ip_address       : "192.168.0.2" — device IP (must match TIA Portal configuration)
+#       subnet_mask      : "255.255.255.0"
+#       gateway          : "192.168.0.1"
+#       cycle_time_ms    : 4        — RT cyclic send interval in milliseconds
+#       watchdog_ms      : 200      — max ms without output frame before AR is torn down
+# ===========================================================================
+_pn_cfg: dict = _cfg.get("profinet", {})
+
+PROFINET_ENABLED:      bool  = bool(_pn_cfg.get("enabled", False))
+PROFINET_INTERFACE:    str   = str(_pn_cfg.get("interface", ""))
+PROFINET_STATION_NAME: str   = str(_pn_cfg.get("station_name", "qc-inspection-sys"))
+PROFINET_MAC:          str   = str(_pn_cfg.get("mac_address", ""))
+PROFINET_IP:           str   = str(_pn_cfg.get("ip_address", "192.168.0.2"))
+PROFINET_SUBNET:       str   = str(_pn_cfg.get("subnet_mask", "255.255.255.0"))
+PROFINET_GATEWAY:      str   = str(_pn_cfg.get("gateway", "192.168.0.1"))
+PROFINET_CYCLE_MS:     int   = int(_pn_cfg.get("cycle_time_ms", 4))
+PROFINET_WATCHDOG_MS:  int   = int(_pn_cfg.get("watchdog_ms", 200))
+
+# ===========================================================================
 # 8. Authentication mode — operator-editable via settings.json
 # ===========================================================================
 

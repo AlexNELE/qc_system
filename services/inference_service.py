@@ -268,22 +268,32 @@ class InferenceService(QThread):
     def _build_detector(self) -> Detector:
         """
         Create the appropriate Detector based on the shared-session setting.
+
+        P3: Model load time is measured and logged at INFO level so operators
+        can observe per-camera startup latency in the log files.
         """
+        _load_start = time.monotonic()
         if settings.SHARED_ONNX_SESSION:
             # Option A — grab the module-level shared session
             shared = get_shared_session(settings.MODEL_PATH)
+            _load_ms = (time.monotonic() - _load_start) * 1000
             self._log.info(
-                "Camera %d using SHARED ONNX session (Option A)",
+                "Camera %d using SHARED ONNX session (Option A) — "
+                "session acquisition took %.1f ms",
                 self._camera_id,
+                _load_ms,
             )
             return Detector(session=shared)
         else:
             # Option B — each thread owns its own session
+            detector = Detector(model_path=settings.MODEL_PATH)
+            _load_ms = (time.monotonic() - _load_start) * 1000
             self._log.info(
-                "Camera %d creating PRIVATE ONNX session (Option B)",
+                "Camera %d PRIVATE ONNX session loaded in %.1f ms (Option B)",
                 self._camera_id,
+                _load_ms,
             )
-            return Detector(model_path=settings.MODEL_PATH)
+            return detector
 
     def _dequeue_frame(self):
         """

@@ -30,6 +30,7 @@ ever changes (e.g. session renewal mid-run), add a ``threading.Lock`` here.
 
 from __future__ import annotations
 
+import threading
 from typing import Optional
 
 from auth.permissions import UserSession, Role  # re-export for convenience
@@ -45,6 +46,10 @@ The authenticated session for the current operator.
 None only during unit tests that bypass the login flow; the production
 entrypoint always calls set_session() before MainWindow is constructed.
 """
+
+# H1: RLock guards reads and writes to current_session so that future
+# mid-run session renewal (e.g. supervisor unlock) is race-free.
+_session_lock: threading.RLock = threading.RLock()
 
 
 def set_session(session: UserSession) -> None:
@@ -62,7 +67,26 @@ def set_session(session: UserSession) -> None:
         UserCacheDB.authenticate_offline().
     """
     global current_session
-    current_session = session
+    with _session_lock:
+        current_session = session
+
+
+def get_session() -> Optional[UserSession]:
+    """
+    Return the current application-wide session.
+
+    Thread-safe: reads are protected by the same RLock used by set_session()
+    and clear_session().  Prefer this over reading ``auth.current_session``
+    directly so that future mid-run session renewals are race-free.
+
+    Returns
+    -------
+    Optional[UserSession]
+        The active session, or None if no session has been established
+        (unit-test or pre-login scenarios).
+    """
+    with _session_lock:
+        return current_session
 
 
 def clear_session() -> None:
@@ -77,7 +101,8 @@ def clear_session() -> None:
             without closing the application.
     """
     global current_session
-    current_session = None
+    with _session_lock:
+        current_session = None
 
 
 # ---------------------------------------------------------------------------

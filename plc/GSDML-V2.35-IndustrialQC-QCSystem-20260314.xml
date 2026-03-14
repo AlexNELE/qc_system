@@ -1,0 +1,414 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+================================================================================
+  GSDML Device Description — QC Inspection System
+  Schema  : GSDML V2.35 (IEC 61158-6-10)
+  Compatible: TIA Portal V13 SP1 and later
+  File    : GSDML-V2.35-IndustrialQC-QCSystem-20260314.xml
+
+  IMPORTANT — Two integration modes are available for the QC system:
+  ─────────────────────────────────────────────────────────────────
+  Mode A │ snap7 / S7-Comm (ISO TCP, port 102)  ← CURRENTLY ACTIVE
+         │   • PC is a TCP client; PLC is the server
+         │   • PLC needs: non-optimised DB100 + PUT/GET enabled
+         │   • No GSDML file needed for Mode A
+         │   • Communication is already implemented in services/plc_service.py
+
+  Mode B │ PROFINET IO device (this GSDML file)
+         │   • PC acts as a PROFINET IO device (slave)
+         │   • PLC S7-1500 is the IO Controller (master)
+         │   • Import this GSDML into TIA Portal → Hardware Catalog
+         │   • PC requires a PROFINET IO device software stack:
+         │       - Hilscher cifX / netX hardware adapter, OR
+         │       - Molex / ProSoft PROFINET adapter card, OR
+         │       - RT-Labs p-net (open-source PROFINET stack, Apache 2.0)
+         │         https://github.com/rtlabs-com/p-net
+         │   • Data layout (bytes and bits) is IDENTICAL in both modes,
+         │     so switching between modes requires no PLC DB changes.
+
+  Data layout (cyclic PROFINET IO process image):
+  ─────────────────────────────────────────────────────────────────
+  INPUT  (PC → PLC Controller, 16 bytes):
+    Byte  0   : PC status flags
+                  bit 0 : reserved (0)
+                  bit 1 : batch_active     – QC batch is running
+                  bit 2 : result_ok        – last capture = OK
+                  bit 3 : result_defect    – last capture = MISSING/DEFECT
+                  bit 4 : heartbeat        – toggles every 1000 ms (PC alive)
+                  bit 5 : system_ready     – all cameras initialised
+                  bit 6 : ack_trigger      – high for duration of capture
+                  bit 7 : reserved (0)
+    Byte  1   : padding (reserved, always 0x00)
+    Bytes 2-3 : detected_count   (INT, big-endian, objects detected in last capture)
+    Bytes 4-5 : expected_count   (INT, big-endian, configured expected count)
+    Bytes 6-7 : camera_id        (INT, big-endian, -1 = all cameras)
+    Bytes 8-9 : defect_count     (INT, big-endian, MISSING captures in batch)
+    Bytes10-11: ok_count         (INT, big-endian, OK captures in batch)
+    Bytes12-15: batch_id_hash    (DINT, big-endian, CRC-32 of batch ID string)
+
+  OUTPUT (PLC Controller → PC, 1 byte):
+    Byte  0   : PLC command flags
+                  bit 0 : trigger   – rising edge → PC captures all cameras
+                  bit 1 : reserved  (future: per-camera trigger, cam 1)
+                  bit 2 : reserved  (future: per-camera trigger, cam 2)
+                  bit 3 : reserved  (future: per-camera trigger, cam 3)
+                  bit 4 : reserved  (future: per-camera trigger, cam 4)
+                  bit 5 : reserved
+                  bit 6 : reserved
+                  bit 7 : inhibit   – active high, suppresses all triggers (E-Stop)
+
+  VendorID 0x0045 is a placeholder.
+  For production use, obtain a registered VendorID from:
+  PROFIBUS & PROFINET International (PI), www.profibus.com
+================================================================================
+-->
+<ISO15745Profile
+    xmlns="http://www.profibus.com/GSDML/2003/11/DeviceProfile"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.profibus.com/GSDML/2003/11/DeviceProfile
+                        GSDML-DeviceProfile-V2.35.xsd">
+
+  <!-- =========================================================
+       Profile Header
+       ========================================================= -->
+  <ProfileHeader>
+    <ProfileIdentification>PROFINET Device Profile</ProfileIdentification>
+    <ProfileRevision>1.00</ProfileRevision>
+    <ProfileName>QC Inspection System PROFINET IO Profile</ProfileName>
+    <ProfileSource>IndustrialQC</ProfileSource>
+    <ProfileClassID>Device</ProfileClassID>
+    <ISO15745Reference>
+      <ISO15745Part>4</ISO15745Part>
+      <ISO15745Edition>1</ISO15745Edition>
+      <ProfileTechnology>PROFINET IO</ProfileTechnology>
+    </ISO15745Reference>
+  </ProfileHeader>
+
+  <!-- =========================================================
+       Profile Body
+       ========================================================= -->
+  <ProfileBody>
+
+    <!-- Device identity ---------------------------------------->
+    <DeviceIdentity VendorID="0x0045" DeviceID="0x0001">
+      <InfoText TextId="IDT_INFO_Device"/>
+      <VendorName Value="IndustrialQC"/>
+    </DeviceIdentity>
+
+    <!-- Product family ----------------------------------------->
+    <DeviceFunction>
+      <Family MainFamily="I/O" ProductFamily="Vision QC Systems"/>
+    </DeviceFunction>
+
+    <!-- =========================================================
+         Application Process
+         ========================================================= -->
+    <ApplicationProcess>
+
+      <!-- ─── Device Access Point (DAP) ─────────────────────── -->
+      <DeviceAccessPointList>
+        <DeviceAccessPointItem
+            ID="IDD_DAP_1"
+            PNIO_Version="V2.3"
+            PhysicalSlots="0..1"
+            ModuleIdentNumber="0x00000001"
+            MinDeviceInterval="32"
+            DNS_CompatibleName="qc-inspection-sys"
+            FixedInSlots="0"
+            ObjectUUID_LocalIndex="1"
+            DeviceID="0x0001"
+            VendorID="0x0045"
+            AddressAssignment="DCP"
+            ImplementationType="SoftwareControlled">
+
+          <ModuleInfo>
+            <Name TextId="IDT_NAME_DAP"/>
+            <InfoText TextId="IDT_INFO_DAP"/>
+            <HardwareRelease Value="V1.0"/>
+            <SoftwareRelease Value="V1.0"/>
+          </ModuleInfo>
+
+          <!-- PROFINET conformance class B = standard RT -->
+          <CertificationInfo>
+            <ConformanceClass Value="B"/>
+            <NetloadClass Value="III"/>
+          </CertificationInfo>
+
+          <!-- Maximum I/O data lengths for this device -->
+          <IOConfigData MaxInputLength="16" MaxOutputLength="1"/>
+
+          <!-- Physical Ethernet port subslot -->
+          <SubslotList>
+            <SubslotItem SubslotID="1" TextId="IDT_NAME_PortSubslot">
+              <Ports>
+                <Port ID="IDD_Port_1" TextId="IDT_NAME_Port1">
+                  <MAUTypeList>
+                    <!-- 100BASE-TX Full Duplex -->
+                    <MAUTypeItem Value="0x0010"/>
+                    <!-- 1000BASE-T  Full Duplex -->
+                    <MAUTypeItem Value="0x0012"/>
+                  </MAUTypeList>
+                  <LinkSpeedDuplexFilterEnabled Value="false"/>
+                </Port>
+              </Ports>
+            </SubslotItem>
+          </SubslotList>
+
+          <!-- The QC data module is allowed in slot 1 only -->
+          <UseableModules>
+            <ModuleItemRef ModuleItemID="IDM_QC_Data" AllowedInSlots="1"/>
+          </UseableModules>
+
+          <!-- DAP always occupies slot 0 with one fixed submodule -->
+          <VirtualSubmoduleList>
+            <VirtualSubmoduleItem
+                ID="IDS_DAP_Submodule"
+                SubmoduleIdentNumber="0x00000001"
+                MayIssueProcessAlarm="false">
+              <IOData/>
+            </VirtualSubmoduleItem>
+          </VirtualSubmoduleList>
+
+        </DeviceAccessPointItem>
+      </DeviceAccessPointList>
+
+      <!-- ─── Module: QC Process Data (slot 1) ─────────────── -->
+      <ModuleList>
+        <ModuleItem ID="IDM_QC_Data" ModuleIdentNumber="0x00000002">
+
+          <ModuleInfo>
+            <Name TextId="IDT_NAME_Module"/>
+            <InfoText TextId="IDT_INFO_Module"/>
+            <HardwareRelease Value="V1.0"/>
+            <SoftwareRelease Value="V1.0"/>
+          </ModuleInfo>
+
+          <VirtualSubmoduleList>
+            <VirtualSubmoduleItem
+                ID="IDS_QC_Submodule"
+                SubmoduleIdentNumber="0x00000001"
+                MayIssueProcessAlarm="false">
+
+              <IOData>
+
+                <!-- ==================================================
+                     INPUT  — PC → PLC  (16 bytes)
+                     Status and measurement data produced by the PC
+                     application and consumed by the PLC controller.
+                     Update rate: every MinDeviceInterval (default 1 ms).
+                     ================================================== -->
+                <Input Consistency="All items consistency">
+
+                  <!-- Byte 0: PC status flags ----------------------->
+                  <DataItem DataType="Unsigned8"
+                            TextId="IDT_IN_StatusFlags"
+                            UseAsBits="true">
+                    <BitDataItem BitOffset="0" TextId="IDT_BIT_IN_Rsv0"/>
+                    <BitDataItem BitOffset="1" TextId="IDT_BIT_IN_BatchActive"/>
+                    <BitDataItem BitOffset="2" TextId="IDT_BIT_IN_ResultOK"/>
+                    <BitDataItem BitOffset="3" TextId="IDT_BIT_IN_ResultDefect"/>
+                    <BitDataItem BitOffset="4" TextId="IDT_BIT_IN_Heartbeat"/>
+                    <BitDataItem BitOffset="5" TextId="IDT_BIT_IN_SystemReady"/>
+                    <BitDataItem BitOffset="6" TextId="IDT_BIT_IN_AckTrigger"/>
+                    <BitDataItem BitOffset="7" TextId="IDT_BIT_IN_Rsv7"/>
+                  </DataItem>
+
+                  <!-- Byte 1: padding (word-align the following INTs) -->
+                  <DataItem DataType="Unsigned8"
+                            TextId="IDT_IN_Padding"/>
+
+                  <!-- Bytes 2-3: detected_count (S7 INT, big-endian) -->
+                  <DataItem DataType="Integer16"
+                            TextId="IDT_IN_DetectedCount"/>
+
+                  <!-- Bytes 4-5: expected_count (S7 INT, big-endian) -->
+                  <DataItem DataType="Integer16"
+                            TextId="IDT_IN_ExpectedCount"/>
+
+                  <!-- Bytes 6-7: camera_id (S7 INT, -1 = all cameras) -->
+                  <DataItem DataType="Integer16"
+                            TextId="IDT_IN_CameraID"/>
+
+                  <!-- Bytes 8-9: defect_count — MISSING tally (S7 INT) -->
+                  <DataItem DataType="Integer16"
+                            TextId="IDT_IN_DefectCount"/>
+
+                  <!-- Bytes 10-11: ok_count — OK tally (S7 INT) -->
+                  <DataItem DataType="Integer16"
+                            TextId="IDT_IN_OkCount"/>
+
+                  <!-- Bytes 12-15: batch_id_hash — CRC-32 (S7 DINT) -->
+                  <DataItem DataType="Integer32"
+                            TextId="IDT_IN_BatchIDHash"/>
+
+                </Input>
+
+                <!-- ==================================================
+                     OUTPUT — PLC → PC  (1 byte)
+                     Commands produced by the PLC controller and consumed
+                     by the PC application.
+                     Update rate: every MinDeviceInterval (default 1 ms).
+                     ================================================== -->
+                <Output Consistency="All items consistency">
+
+                  <!-- Byte 0: PLC command flags -------------------->
+                  <DataItem DataType="Unsigned8"
+                            TextId="IDT_OUT_CommandFlags"
+                            UseAsBits="true">
+                    <BitDataItem BitOffset="0" TextId="IDT_BIT_OUT_Trigger"/>
+                    <BitDataItem BitOffset="1" TextId="IDT_BIT_OUT_CamTrig1"/>
+                    <BitDataItem BitOffset="2" TextId="IDT_BIT_OUT_CamTrig2"/>
+                    <BitDataItem BitOffset="3" TextId="IDT_BIT_OUT_CamTrig3"/>
+                    <BitDataItem BitOffset="4" TextId="IDT_BIT_OUT_CamTrig4"/>
+                    <BitDataItem BitOffset="5" TextId="IDT_BIT_OUT_Rsv5"/>
+                    <BitDataItem BitOffset="6" TextId="IDT_BIT_OUT_Rsv6"/>
+                    <BitDataItem BitOffset="7" TextId="IDT_BIT_OUT_Inhibit"/>
+                  </DataItem>
+
+                </Output>
+
+              </IOData>
+            </VirtualSubmoduleItem>
+          </VirtualSubmoduleList>
+
+        </ModuleItem>
+      </ModuleList>
+
+      <!-- ─── External Text List ─────────────────────────────── -->
+      <ExternalTextList>
+
+        <!-- ── English (primary) ──────────────────────────────── -->
+        <PrimaryLanguage xml:lang="en">
+
+          <!-- Device -->
+          <Text TextId="IDT_INFO_Device"
+                Value="QC Inspection System — multi-camera vision quality control. Counts objects per tray and reports OK / MISSING status to the PLC via PROFINET IO cyclic data exchange."/>
+
+          <!-- DAP -->
+          <Text TextId="IDT_NAME_DAP"
+                Value="QC System Device Access Point"/>
+          <Text TextId="IDT_INFO_DAP"
+                Value="DAP for the QC Inspection PC. Supports one process data module in slot 1. IP address assignment via DCP. Heartbeat timeout for watchdog: 3000 ms."/>
+
+          <!-- Port -->
+          <Text TextId="IDT_NAME_PortSubslot" Value="Port Subslot"/>
+          <Text TextId="IDT_NAME_Port1"        Value="Ethernet Port (RJ45)"/>
+
+          <!-- Module -->
+          <Text TextId="IDT_NAME_Module"
+                Value="QC Process Data Module"/>
+          <Text TextId="IDT_INFO_Module"
+                Value="Cyclic I/O module: 16 bytes input (PC status + inspection counts), 1 byte output (PLC trigger and inhibit commands). Place in slot 1."/>
+
+          <!-- ── INPUT: Byte 0 flags ── -->
+          <Text TextId="IDT_IN_StatusFlags"
+                Value="PC Status Flags [Byte 0]"/>
+          <Text TextId="IDT_BIT_IN_Rsv0"
+                Value="Bit 0: Reserved (always 0)"/>
+          <Text TextId="IDT_BIT_IN_BatchActive"
+                Value="Bit 1: Batch Active — a QC inspection batch is currently running"/>
+          <Text TextId="IDT_BIT_IN_ResultOK"
+                Value="Bit 2: Result OK — the most recent capture was PASS (all items present)"/>
+          <Text TextId="IDT_BIT_IN_ResultDefect"
+                Value="Bit 3: Result DEFECT — the most recent capture was FAIL (missing items detected)"/>
+          <Text TextId="IDT_BIT_IN_Heartbeat"
+                Value="Bit 4: PC Heartbeat — toggles every 1000 ms while the application is running. Configure a PLC watchdog with a 3000 ms timeout to detect PC crash or network loss."/>
+          <Text TextId="IDT_BIT_IN_SystemReady"
+                Value="Bit 5: System Ready — all configured cameras are initialised and delivering frames to the inference pipeline"/>
+          <Text TextId="IDT_BIT_IN_AckTrigger"
+                Value="Bit 6: ACK Trigger — set HIGH by PC immediately on trigger detection; cleared after _capture_all() completes on the UI thread (~5–50 ms pulse). Use this in the PLC program to confirm the trigger was received and processed before de-asserting the trigger output."/>
+          <Text TextId="IDT_BIT_IN_Rsv7"
+                Value="Bit 7: Reserved (always 0)"/>
+
+          <!-- ── INPUT: word / dword fields ── -->
+          <Text TextId="IDT_IN_Padding"
+                Value="Padding Byte [Byte 1] — always 0x00 (word-alignment for following INT fields)"/>
+          <Text TextId="IDT_IN_DetectedCount"
+                Value="Detected Count [Bytes 2-3, INT] — number of objects detected in the most recent capture. Range: 0 … 32767."/>
+          <Text TextId="IDT_IN_ExpectedCount"
+                Value="Expected Count [Bytes 4-5, INT] — configured expected object count per tray (from settings.json). Range: 1 … 32767."/>
+          <Text TextId="IDT_IN_CameraID"
+                Value="Camera ID [Bytes 6-7, INT] — logical index (0-based) of the camera that produced the most recent capture result. Value -1 indicates a simultaneous all-camera capture."/>
+          <Text TextId="IDT_IN_DefectCount"
+                Value="Defect Count [Bytes 8-9, INT] — running total of MISSING (FAIL) captures since the current batch started. Resets to 0 on each Batch Start."/>
+          <Text TextId="IDT_IN_OkCount"
+                Value="OK Count [Bytes 10-11, INT] — running total of OK (PASS) captures since the current batch started. Resets to 0 on each Batch Start."/>
+          <Text TextId="IDT_IN_BatchIDHash"
+                Value="Batch ID Hash [Bytes 12-15, DINT] — CRC-32 of the current batch ID string (e.g. 'BATCH_001'). Allows the PLC to detect batch transitions. Value 0 when no batch is active."/>
+
+          <!-- ── OUTPUT: Byte 0 command flags ── -->
+          <Text TextId="IDT_OUT_CommandFlags"
+                Value="PLC Command Flags [Byte 0]"/>
+          <Text TextId="IDT_BIT_OUT_Trigger"
+                Value="Bit 0: Trigger — rising edge (0→1) causes the PC to capture all configured cameras simultaneously. The PC sets ACK Trigger (input bit 6) HIGH for the duration of processing. De-assert trigger only after observing ACK Trigger HIGH, then wait for ACK to go LOW before asserting the next trigger (one-shot handshake)."/>
+          <Text TextId="IDT_BIT_OUT_CamTrig1"
+                Value="Bit 1: Reserved — future per-camera trigger for camera 1 (not yet implemented)"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig2"
+                Value="Bit 2: Reserved — future per-camera trigger for camera 2 (not yet implemented)"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig3"
+                Value="Bit 3: Reserved — future per-camera trigger for camera 3 (not yet implemented)"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig4"
+                Value="Bit 4: Reserved — future per-camera trigger for camera 4 (not yet implemented)"/>
+          <Text TextId="IDT_BIT_OUT_Rsv5"
+                Value="Bit 5: Reserved"/>
+          <Text TextId="IDT_BIT_OUT_Rsv6"
+                Value="Bit 6: Reserved"/>
+          <Text TextId="IDT_BIT_OUT_Inhibit"
+                Value="Bit 7: Inhibit (E-Stop) — active HIGH: the PC will suppress all trigger processing while this bit is set. Use to implement safety interlocks (light curtain, E-Stop relay, guard door). The heartbeat continues during inhibit so the PLC watchdog is not tripped."/>
+
+        </PrimaryLanguage>
+
+        <!-- ── German (secondary) ─────────────────────────────── -->
+        <SecondaryLanguage xml:lang="de">
+
+          <Text TextId="IDT_INFO_Device"
+                Value="QC-Inspektionssystem — Mehrkamera-Bildverarbeitungs-Qualitätskontrolle. Zählt Objekte pro Tablett und meldet OK / FEHLER-Status an die SPS via PROFINET IO."/>
+          <Text TextId="IDT_NAME_DAP"
+                Value="QC-System Device Access Point"/>
+          <Text TextId="IDT_INFO_DAP"
+                Value="DAP für den QC-Inspektions-PC. Unterstützt ein Prozessdatenmodul in Steckplatz 1. IP-Adresszuweisung via DCP. Heartbeat-Watchdog-Timeout: 3000 ms."/>
+          <Text TextId="IDT_NAME_PortSubslot" Value="Port-Subslot"/>
+          <Text TextId="IDT_NAME_Port1"        Value="Ethernet-Port (RJ45)"/>
+          <Text TextId="IDT_NAME_Module"
+                Value="QC-Prozessdatenmodul"/>
+          <Text TextId="IDT_INFO_Module"
+                Value="Zyklisches E/A-Modul: 16 Byte Eingang (PC-Status + Zähler), 1 Byte Ausgang (SPS-Befehle). In Steckplatz 1 einsetzen."/>
+
+          <!-- Byte 0 Eingangsbits -->
+          <Text TextId="IDT_IN_StatusFlags"         Value="PC-Statusflags [Byte 0]"/>
+          <Text TextId="IDT_BIT_IN_Rsv0"            Value="Bit 0: Reserviert (immer 0)"/>
+          <Text TextId="IDT_BIT_IN_BatchActive"     Value="Bit 1: Charge aktiv — QC-Charge läuft"/>
+          <Text TextId="IDT_BIT_IN_ResultOK"        Value="Bit 2: Ergebnis OK — letzte Aufnahme war in Ordnung"/>
+          <Text TextId="IDT_BIT_IN_ResultDefect"    Value="Bit 3: Ergebnis FEHLER — letzte Aufnahme hatte fehlende Teile"/>
+          <Text TextId="IDT_BIT_IN_Heartbeat"       Value="Bit 4: PC-Heartbeat — wechselt alle 1000 ms; SPS-Watchdog auf 3000 ms setzen"/>
+          <Text TextId="IDT_BIT_IN_SystemReady"     Value="Bit 5: System bereit — alle Kameras initialisiert"/>
+          <Text TextId="IDT_BIT_IN_AckTrigger"      Value="Bit 6: ACK-Trigger — HIGH während der Aufnahmeverarbeitung (~5–50 ms)"/>
+          <Text TextId="IDT_BIT_IN_Rsv7"            Value="Bit 7: Reserviert (immer 0)"/>
+
+          <!-- Worte / Dworte -->
+          <Text TextId="IDT_IN_Padding"             Value="Füllbyte [Byte 1] — immer 0x00"/>
+          <Text TextId="IDT_IN_DetectedCount"       Value="Erkannte Objekte [Bytes 2-3, INT] — erkannte Teile bei letzter Aufnahme"/>
+          <Text TextId="IDT_IN_ExpectedCount"       Value="Erwartete Objekte [Bytes 4-5, INT] — konfigurierter Soll-Wert"/>
+          <Text TextId="IDT_IN_CameraID"            Value="Kamera-ID [Bytes 6-7, INT] — Kamera der letzten Aufnahme; -1 = alle"/>
+          <Text TextId="IDT_IN_DefectCount"         Value="Fehleranzahl [Bytes 8-9, INT] — FEHLER-Aufnahmen in aktueller Charge"/>
+          <Text TextId="IDT_IN_OkCount"             Value="OK-Anzahl [Bytes 10-11, INT] — OK-Aufnahmen in aktueller Charge"/>
+          <Text TextId="IDT_IN_BatchIDHash"         Value="Chargen-ID-Hash [Bytes 12-15, DINT] — CRC-32 der Chargen-ID; 0 wenn keine Charge aktiv"/>
+
+          <!-- Byte 0 Ausgangsbits -->
+          <Text TextId="IDT_OUT_CommandFlags"       Value="SPS-Befehlsflags [Byte 0]"/>
+          <Text TextId="IDT_BIT_OUT_Trigger"        Value="Bit 0: Trigger — steigende Flanke (0→1): PC nimmt alle Kameras auf. Vor erneutem Trigger auf ACK warten."/>
+          <Text TextId="IDT_BIT_OUT_CamTrig1"       Value="Bit 1: Reserviert — zukünftiger Kamera-1-Trigger"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig2"       Value="Bit 2: Reserviert — zukünftiger Kamera-2-Trigger"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig3"       Value="Bit 3: Reserviert — zukünftiger Kamera-3-Trigger"/>
+          <Text TextId="IDT_BIT_OUT_CamTrig4"       Value="Bit 4: Reserviert — zukünftiger Kamera-4-Trigger"/>
+          <Text TextId="IDT_BIT_OUT_Rsv5"           Value="Bit 5: Reserviert"/>
+          <Text TextId="IDT_BIT_OUT_Rsv6"           Value="Bit 6: Reserviert"/>
+          <Text TextId="IDT_BIT_OUT_Inhibit"        Value="Bit 7: Inhibit (Not-Halt) — HIGH: PC unterdrückt alle Trigger (Lichtschranke, Schutztür, Not-Halt)"/>
+
+        </SecondaryLanguage>
+
+      </ExternalTextList>
+
+    </ApplicationProcess>
+  </ProfileBody>
+</ISO15745Profile>

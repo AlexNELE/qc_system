@@ -32,6 +32,12 @@ import settings
 
 logger = logging.getLogger(__name__)
 
+# L1: Rounding epsilon used in letterbox padding calculations.
+# Applied as ±epsilon around the fractional pad value to convert float
+# padding (e.g. 0.5 pixels) into deterministic integer top/bottom/left/right
+# values that sum to the correct total padding without off-by-one drift.
+_LETTERBOX_ROUNDING_EPSILON: float = 0.1
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -229,10 +235,10 @@ class Detector:
         # Pad to exact target size with grey (114)
         pad_x = (target_w - new_w) / 2
         pad_y = (target_h - new_h) / 2
-        top    = int(round(pad_y - 0.1))
-        bottom = int(round(pad_y + 0.1))
-        left   = int(round(pad_x - 0.1))
-        right  = int(round(pad_x + 0.1))
+        top    = int(round(pad_y - _LETTERBOX_ROUNDING_EPSILON))
+        bottom = int(round(pad_y + _LETTERBOX_ROUNDING_EPSILON))
+        left   = int(round(pad_x - _LETTERBOX_ROUNDING_EPSILON))
+        right  = int(round(pad_x + _LETTERBOX_ROUNDING_EPSILON))
 
         padded = cv2.copyMakeBorder(
             resized, top, bottom, left, right,

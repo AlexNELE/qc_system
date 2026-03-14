@@ -70,11 +70,14 @@ class CameraService(QThread):
             maxsize should equal settings.FRAME_QUEUE_SIZE.
         """
         super().__init__(parent)
-        self._camera_id  = camera_id
-        self._source     = source
-        self._queue      = frame_queue
-        self._stop_event = threading.Event()
-        self._log        = logging.getLogger(f"camera_{camera_id}")
+        self._camera_id    = camera_id
+        self._source       = source
+        self._queue        = frame_queue
+        self._stop_event   = threading.Event()
+        self._log          = logging.getLogger(f"camera_{camera_id}")
+        # P1: Cumulative counter of frames dropped because the inference queue
+        # was full.  Readable via dropped_frame_count property.
+        self._dropped_frames: int = 0
 
     # ------------------------------------------------------------------
     # QThread lifecycle
@@ -143,6 +146,17 @@ class CameraService(QThread):
 
         self._log.info("CameraService %d stopped", self._camera_id)
 
+    @property
+    def dropped_frame_count(self) -> int:
+        """
+        Total number of frames dropped because the inference queue was full.
+
+        This counter is cumulative from service start and never reset by
+        reconnects.  A MainWindow or future status panel can poll this
+        to surface throughput pressure to the operator.
+        """
+        return self._dropped_frames
+
     def stop(self) -> None:
         """
         Signal the run loop to exit and wait up to 3 s for the thread.
@@ -186,16 +200,34 @@ class CameraService(QThread):
         Push a frame onto the shared queue, dropping the oldest frame if full.
 
         This prevents memory bloat when inference is slower than capture.
+        M1/P1: When a frame is dropped a WARNING is logged and the cumulative
+        dropped_frame_count counter is incremented so operators can detect
+        sustained throughput pressure in the log files.
         """
         if self._queue.full():
             try:
                 self._queue.get_nowait()   # discard oldest frame
             except queue.Empty:
                 pass
+            self._dropped_frames += 1
+            self._log.warning(
+                "Camera %d: inference queue full — frame dropped "
+                "(total dropped: %d).  Inference may be too slow for the "
+                "current capture rate.",
+                self._camera_id,
+                self._dropped_frames,
+            )
         try:
             self._queue.put_nowait(frame)
         except queue.Full:
-            pass  # race between full-check and put — harmless to skip
+            # Race between the full-check and put — count and log this too.
+            self._dropped_frames += 1
+            self._log.warning(
+                "Camera %d: frame dropped at put_nowait "
+                "(total dropped: %d).",
+                self._camera_id,
+                self._dropped_frames,
+            )
 
     def _interruptible_sleep(self, duration: float) -> None:
         """

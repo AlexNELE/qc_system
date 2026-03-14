@@ -495,6 +495,7 @@ class LoginDialog(QDialog):
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._session = session
+            auth.set_session(session)
             logger.info(
                 "Password changed on first login | user=%s", session.username
             )

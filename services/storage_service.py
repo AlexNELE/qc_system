@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -392,7 +393,19 @@ class StorageService:
                         status, image_path, annotated_path, timestamp,
                     ),
                 )
+                # P2: Measure commit latency and surface slow writes as WARNING
+                # so DB bottlenecks are visible in production logs.
+                _commit_start = time.monotonic()
                 conn.commit()
+                _commit_ms = (time.monotonic() - _commit_start) * 1000
+                if _commit_ms > 100:
+                    logger.warning(
+                        "Slow SQLite commit detected: %.1f ms "
+                        "(cam=%d batch=%s status=%s). "
+                        "Consider reducing write frequency or switching to "
+                        "a faster storage device.",
+                        _commit_ms, camera_id, batch_id, status,
+                    )
                 logger.debug(
                     "DB write | cam=%d batch=%s status=%s detected=%d",
                     camera_id, batch_id, status, detected_count,

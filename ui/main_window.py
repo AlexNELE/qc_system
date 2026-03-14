@@ -133,6 +133,7 @@ from PySide6.QtWidgets import (
 from services.camera_service import CameraService
 from services.defect_service import DefectService
 from services.inference_service import MissingEvent, InferenceService
+from services.plc_service import PLCService
 from services.report_service import ReportService
 from services.storage_service import StorageService
 from ui.camera_panel import CameraPanel
@@ -268,6 +269,56 @@ class MainWindow(QMainWindow):
         self._storage = StorageService()
         self._defect  = DefectService()
         self._defect.set_storage_callback(self._on_missing_saved)
+
+        # --- PLC / PROFINET service (optional, mutually exclusive) ---
+        # Mode A: snap7 ISO TCP (PLCService)
+        # Mode B: PROFINET IO Device (ProfinetService)
+        # Both expose the same signal/write API; _plc holds whichever is active.
+        self._plc: Optional[PLCService | ProfinetService] = None
+
+        if settings.PROFINET_ENABLED:
+            if not settings.PROFINET_INTERFACE or not settings.PROFINET_MAC:
+                logger.warning(
+                    "ProfinetService not started: profinet.interface and "
+                    "profinet.mac_address must be set in settings.json"
+                )
+            else:
+                from services.profinet_service import ProfinetService  # lazy
+                self._plc = ProfinetService(
+                    interface=settings.PROFINET_INTERFACE,
+                    station_name=settings.PROFINET_STATION_NAME,
+                    mac_address=settings.PROFINET_MAC,
+                    ip_address=settings.PROFINET_IP,
+                    subnet_mask=settings.PROFINET_SUBNET,
+                    gateway=settings.PROFINET_GATEWAY,
+                    cycle_time_ms=settings.PROFINET_CYCLE_MS,
+                    watchdog_ms=settings.PROFINET_WATCHDOG_MS,
+                    parent=self,
+                )
+                self._plc.trigger_received.connect(self._on_plc_trigger)
+                self._plc.plc_connected.connect(self._on_plc_connected)
+                self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+                self._plc.plc_error.connect(self._on_plc_error)
+                self._plc.start()
+                logger.info(
+                    "ProfinetService started | iface=%s station=%s ip=%s",
+                    settings.PROFINET_INTERFACE,
+                    settings.PROFINET_STATION_NAME,
+                    settings.PROFINET_IP,
+                )
+        elif settings.PLC_ENABLED:
+            self._plc = PLCService(parent=self)
+            self._plc.trigger_received.connect(self._on_plc_trigger)
+            self._plc.plc_connected.connect(self._on_plc_connected)
+            self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+            self._plc.plc_error.connect(self._on_plc_error)
+            self._plc.start()
+            logger.info(
+                "PLCService started | ip=%s db=DB%d",
+                settings.PLC_IP, settings.PLC_DB_NUMBER,
+            )
+        else:
+            logger.info("PLC interface disabled (plc.enabled=false in settings.json)")
 
         # --- Batch state ---
         self._batch_running:    bool            = False
@@ -852,6 +903,21 @@ class MainWindow(QMainWindow):
         self._global_total_detected += count_result.detected_count
         self._update_total_counter_label()
 
+        # --- Notify PLC with latest capture result and running tallies ---
+        if self._plc is not None:
+            self._plc.write_result(
+                camera_id=cam_id,
+                status=count_result.status,
+                detected=count_result.detected_count,
+                expected=count_result.expected_count,
+            )
+            self._plc.write_batch_state(
+                active=True,
+                ok_count=sum(self._batch_ok_count.values()),
+                defect_count=sum(self._batch_missing_count.values()),
+                batch_id=batch_id,
+            )
+
         # --- Push stats update to CameraPanel stats row via signal bus ---
         app_signals.batch_stats_updated.emit(
             cam_id,
@@ -939,6 +1005,11 @@ class MainWindow(QMainWindow):
         for cam_id in self._camera_ids:
             self._start_camera(cam_id)
 
+        # Notify PLC: batch is active, reset tallies, send batch_id hash
+        if self._plc is not None:
+            self._plc.write_batch_state(active=True, batch_id=batch_id)
+            self._plc.write_system_ready(True)
+
         self._status_bar.showMessage(
             f"Batch '{batch_id}' started — {len(self._camera_ids)} cameras active"
         )
@@ -966,6 +1037,18 @@ class MainWindow(QMainWindow):
         )
 
         self._batch_running = False
+
+        # Notify PLC: batch ended, send final tallies
+        if self._plc is not None:
+            total_ok      = sum(self._batch_ok_count.values())
+            total_missing = sum(self._batch_missing_count.values())
+            self._plc.write_batch_state(
+                active=False,
+                ok_count=total_ok,
+                defect_count=total_missing,
+                batch_id=batch_id,
+            )
+            self._plc.write_system_ready(False)
 
         # Stop cameras first so no new results arrive during report generation
         self._stop_all()
@@ -1198,6 +1281,59 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 "Report generation failed — check logs for details.", 8000
             )
+
+    # ------------------------------------------------------------------
+    # PLC signal handlers
+    # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _on_plc_trigger(self, camera_id: int) -> None:
+        """
+        Called when the PLC asserts a rising edge on the trigger bit.
+
+        ``camera_id`` is -1 (capture all) in the current implementation.
+        The slot calls ``_capture_all()`` on the UI thread exactly as if the
+        operator had pressed the "Capture All" button.
+
+        After capture completes, ``write_ack_clear()`` is called so the PLC
+        sees a stable ACK pulse whose duration equals the capture processing
+        time (~5–50 ms), detectable by any PLC with a ≥10 ms scan cycle.
+
+        The call is silently ignored when no batch is running so spurious
+        PLC trigger pulses do not cause unexpected behaviour.
+        """
+        if camera_id == -1:
+            logger.info("PLC trigger received — calling _capture_all()")
+            self._capture_all()
+        else:
+            logger.info("PLC trigger received | cam=%d — calling _capture_camera()", camera_id)
+            self._capture_camera(camera_id)
+        # Clear ACK now that processing is complete on the UI thread.
+        # This gives the PLC a stable, bounded ACK pulse rather than an
+        # auto-cleared edge that may vanish before the PLC's next scan cycle.
+        if self._plc is not None:
+            self._plc.write_ack_clear()
+
+    @Slot()
+    def _on_plc_connected(self) -> None:
+        """Show PLC connection status in the status bar."""
+        self._status_bar.showMessage(
+            f"PLC connected | {settings.PLC_IP}  DB{settings.PLC_DB_NUMBER}", 5000
+        )
+        logger.info("PLC connected | ip=%s", settings.PLC_IP)
+
+    @Slot()
+    def _on_plc_disconnected(self) -> None:
+        """Show PLC disconnection in the status bar."""
+        self._status_bar.showMessage(
+            f"PLC disconnected | {settings.PLC_IP} — reconnecting…", 5000
+        )
+        logger.warning("PLC disconnected | ip=%s", settings.PLC_IP)
+
+    @Slot(str)
+    def _on_plc_error(self, message: str) -> None:
+        """Show non-fatal PLC errors in the status bar (already logged by PLCService)."""
+        self._status_bar.showMessage(f"PLC: {message}", 4000)
 
     # ------------------------------------------------------------------
     # Batch ID helpers
@@ -1456,10 +1592,15 @@ class MainWindow(QMainWindow):
 
         # Pass ldap_svc=None when AD is disabled; LoginDialog handles that gracefully.
         dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
-        dialog.exec()
+        accepted = dialog.exec()
 
-        # auth.set_session() is called inside LoginDialog._on_auth_succeeded,
-        # so current_session already reflects the outcome — refresh unconditionally.
+        # auth.set_session() is called inside the dialog on success, but as a
+        # safety net (e.g. force-password-change path) also apply dialog.session
+        # if the dialog was accepted and the global session wasn't updated yet.
+        if accepted and dialog.session is not None:
+            if auth.current_session is None or auth.current_session.authenticated_via in ("guest", "auto", "no_auth"):
+                auth.set_session(dialog.session)
+
         self._refresh_login_widget()
 
         session = auth.current_session
@@ -1502,13 +1643,14 @@ class MainWindow(QMainWindow):
             self._batch_end()
 
         import settings as _s
-        new_session = (
-            auth.create_auto_session()
-            if not _s.AUTH_LOGIN_REQUIRED
-            else auth.create_guest_session()
-        )
+        if not _s.AUTH_AD_ENABLED:
+            new_session = auth.create_no_auth_session()
+        elif not _s.AUTH_LOGIN_REQUIRED:
+            new_session = auth.create_auto_session()
+        else:
+            new_session = auth.create_guest_session()
         auth.set_session(new_session)
-        logger.info("User logged out — guest session restored (Login button shown)")
+        logger.info("User logged out — session restored")
 
         self._refresh_login_widget()
         self._status_bar.showMessage("Logged out — click Login to sign in again", 4000)
@@ -1683,11 +1825,12 @@ class MainWindow(QMainWindow):
             logger.info("Auth reloaded — local accounts only (AD disabled)")
 
         import settings as _s
-        new_session = (
-            auth.create_auto_session()
-            if not _s.AUTH_LOGIN_REQUIRED
-            else auth.create_guest_session()
-        )
+        if not _s.AUTH_AD_ENABLED:
+            new_session = auth.create_no_auth_session()
+        elif not _s.AUTH_LOGIN_REQUIRED:
+            new_session = auth.create_auto_session()
+        else:
+            new_session = auth.create_guest_session()
         auth.set_session(new_session)
         self._refresh_login_widget()
         self._status_bar.showMessage(
@@ -1756,6 +1899,11 @@ class MainWindow(QMainWindow):
 
         self._clock_timer.stop()
         self._stop_all()
+
+        # Stop PLC service before other cleanup
+        if self._plc is not None:
+            logger.info("Stopping PLCService...")
+            self._plc.stop()
 
         # Wait for any in-progress report generation
         if self._report_service is not None and self._report_service.isRunning():

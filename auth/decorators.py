@@ -95,7 +95,7 @@ def guarded_action(
     bool
         True if access is granted; False if denied (dialog already shown).
     """
-    session = auth.current_session
+    session = auth.get_session()
 
     # No session (unit test / pre-login) — allow everything
     if session is None:
@@ -135,7 +135,7 @@ def guarded_role(
 
     Returns True if the role is sufficient, False and shows a dialog otherwise.
     """
-    session = auth.current_session
+    session = auth.get_session()
     if session is None:
         return True
 

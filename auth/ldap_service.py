@@ -153,6 +153,18 @@ class LDAPAuthService:
             self._servers, self._domain, self._base_dn, self._use_tls, self._use_ssl,
         )
 
+        # H2: Warn when plain LDAP is in use.  Credentials travel in clear text
+        # over the network.  Set ldap_use_tls or ldap_use_ssl to true in
+        # settings.json for any environment that is not an isolated local LAN.
+        if not self._use_tls and not self._use_ssl:
+            logger.warning(
+                "SECURITY WARNING: LDAP connection is NOT encrypted "
+                "(ldap_use_tls=False, ldap_use_ssl=False).  "
+                "Credentials will be transmitted in plain text.  "
+                "Set ldap_use_tls or ldap_use_ssl to true in settings.json "
+                "for production deployments."
+            )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
