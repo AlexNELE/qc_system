@@ -15,7 +15,7 @@
     "save_annotated_images": true,
     "log_level": "DEBUG",
     "plc": {
-        "enabled": true,
+        "enabled": false,
         "ip": "192.168.0.1",
         "rack": 0,
         "slot": 1,

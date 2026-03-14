@@ -100,9 +100,11 @@ class RTCyclic:
 
     def output_data_age_ms(self) -> float:
         """Return how many ms ago the last valid output frame was received."""
-        if self._last_output_recv == 0.0:
+        with self._lock:
+            last = self._last_output_recv
+        if last == 0.0:
             return float("inf")
-        return (time.monotonic() - self._last_output_recv) * 1000.0
+        return (time.monotonic() - last) * 1000.0
 
     # =========================================================================
     # Build outgoing input frame
@@ -185,8 +187,9 @@ class RTCyclic:
 
     def update_frame_ids(self, input_frame_id: int, output_frame_id: int) -> None:
         """Update frame IDs after CM Connect negotiation."""
-        self.input_frame_id  = input_frame_id
-        self.output_frame_id = output_frame_id
+        with self._lock:
+            self.input_frame_id  = input_frame_id
+            self.output_frame_id = output_frame_id
 
     def update_dst_mac(self, dst_mac: str) -> None:
         """Update the destination MAC (controller's MAC from CM AR block)."""

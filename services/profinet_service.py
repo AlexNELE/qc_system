@@ -156,7 +156,11 @@ class ProfinetService(QThread):
             subnet_mask=subnet_mask,
             gateway=gateway,
         )
-        self._cm  = CMHandler()
+        self._cm  = CMHandler(
+            mac_address=mac_address,
+            ip_address=ip_address,
+            station_name=station_name,
+        )
         self._rt  = RTCyclic(
             src_mac=mac_address,
             dst_mac=mac_address,          # overwritten when AR established
@@ -313,7 +317,7 @@ class ProfinetService(QThread):
             src_bytes = bytes(int(x, 16) for x in self._dcp.mac_address.split(":"))
             eth_type  = struct.pack("!H", PNIO_ETHERTYPE)
             frame     = dst_bytes + src_bytes + eth_type + response
-            sendp(Ether(frame), iface=self._interface, verbose=False)
+            sendp(frame, iface=self._interface, verbose=False)
         except Exception as exc:
             logger.warning("Failed to send DCP response: %s", exc)
 
@@ -417,7 +421,7 @@ class ProfinetService(QThread):
             t0 = time.monotonic()
             try:
                 frame = self._rt.build_input_ethernet_frame()
-                sendp(Ether(frame), iface=self._interface, verbose=False)
+                sendp(frame, iface=self._interface, verbose=False)
             except Exception as exc:
                 logger.debug("RT send error: %s", exc)
 
@@ -456,20 +460,19 @@ class ProfinetService(QThread):
     def write_result(
         self,
         camera_id:      int,
-        detected_count: int,
-        defect_count:   int,
-        ok_count:       int,
-        capture_ok:     bool = True,
+        status:         str,
+        detected:       int,
+        expected:       int,
     ) -> None:
         """Write per-camera inspection result into the input shadow buffer."""
+        capture_ok = (status == "OK")
         with self._lock:
             buf = self._input_buf
             buf[0] = _set_bit(buf[0], _BIT_CAPTURE_OK,   capture_ok)
             buf[0] = _set_bit(buf[0], _BIT_CAPTURE_BUSY, False)
-            struct.pack_into("!H", buf, _OFF_CAMERA_ID,  _clamp(camera_id,      0, 0xFFFF))
-            struct.pack_into("!H", buf, _OFF_DETECTED,   _clamp(detected_count, 0, 0xFFFF))
-            struct.pack_into("!H", buf, _OFF_DEFECT,     _clamp(defect_count,   0, 0xFFFF))
-            struct.pack_into("!H", buf, _OFF_OK,         _clamp(ok_count,       0, 0xFFFF))
+            struct.pack_into("!H", buf, _OFF_CAMERA_ID, _clamp(camera_id, 0, 0xFFFF))
+            struct.pack_into("!H", buf, _OFF_DETECTED,  _clamp(detected,  0, 0xFFFF))
+            struct.pack_into("!H", buf, _OFF_EXPECTED,  _clamp(expected,  0, 0xFFFF))
         self._flush_input()
 
     def write_batch_state(
@@ -482,12 +485,11 @@ class ProfinetService(QThread):
         ok_count:       int  = 0,
     ) -> None:
         """Write batch state and counters into the input shadow buffer."""
-        # Compute batch hash only when batch_id changes
-        if batch_id != self._batch_id_cache:
-            self._batch_id_cache = batch_id
-            self._batch_hash = zlib.crc32(batch_id.encode()) if batch_id else 0
-
         with self._lock:
+            if batch_id != self._batch_id_cache:
+                self._batch_id_cache = batch_id
+                self._batch_hash = zlib.crc32(batch_id.encode()) if batch_id else 0
+
             buf = self._input_buf
             buf[0] = _set_bit(buf[0], _BIT_BATCH_ACTIVE, active)
             struct.pack_into("!H", buf, _OFF_EXPECTED, _clamp(expected_count, 0, 0xFFFF))

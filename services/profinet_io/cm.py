@@ -126,7 +126,7 @@ class CMHandler:
                 return ar
         return None
 
-    def handle_udp(self, data: bytes, src_addr: tuple) -> Optional[bytes]:
+    def handle_udp(self, data: bytes, src_ip: str) -> Optional[bytes]:
         """
         Process one incoming UDP datagram from the controller.
 
@@ -152,7 +152,6 @@ class CMHandler:
             return None
 
         ndr = data[_RPC_HEADER_SIZE:]
-        src_ip = src_addr[0]
 
         logger.debug(
             "PNIO CM UDP | op=%d seq=%d src=%s", op_num, seq_num, src_ip

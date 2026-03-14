@@ -341,13 +341,11 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Authentication — behaviour depends on AUTH_AD_ENABLED in settings.json.
     #
-    #   True  → App starts immediately showing the camera grid.  A guest
-    #            OPERATOR session is set so permission guards are active.
-    #            A "Login" button in the header lets the operator
-    #            authenticate via AD at any time.
-    #   False → Skip login entirely; an automatic ADMIN session is created
-    #            and the application starts immediately without any sign-in.
-    #            The header shows a static "Local User [Administrator]" chip.
+    #   True  → LDAP service built, app starts with guest session,
+    #            Login button in header lets the operator authenticate
+    #            via AD at any time.
+    #   False → No LDAP, no-auth session created, name chip shown
+    #            immediately.  Role comes from AUTH_NO_AUTH_DEFAULT_ROLE.
     # ------------------------------------------------------------------
     import settings as _settings
     import auth

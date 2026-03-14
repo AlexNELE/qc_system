@@ -1236,20 +1236,12 @@ class MainWindow(QMainWindow):
     ) -> None:
         """
         Storage callback invoked by the DefectService worker thread after save.
-        Writes the missing-item record to SQLite then emits missing_saved signal.
+        Emits missing_saved signal to carry data back to the UI thread where
+        the SQLite record_defect call is safe to make.
 
         NOTE: This runs in the DefectService worker thread, NOT the UI thread.
-        We only call the storage service (thread-safe) and emit a signal here.
+        Do NOT call self._storage here — SQLite is not thread-safe across threads.
         """
-        self._storage.record_defect(
-            camera_id=camera_id,
-            batch_id=batch_id,
-            image_path=original_path,
-            annotated_path=annotated_path,
-            detected_count=detected_count,
-            expected_count=expected_count,
-            timestamp_str=timestamp_str,
-        )
         app_signals.missing_saved.emit(camera_id, batch_id, original_path or "")
 
     @Slot(int, str, str)
@@ -1259,7 +1251,19 @@ class MainWindow(QMainWindow):
         batch_id: str,
         image_path: str,
     ) -> None:
-        """Update status bar when a missing-item image is confirmed saved."""
+        """
+        Runs on the UI thread (connected via Qt signal).
+        Writes the missing-item record to SQLite and updates the status bar.
+        """
+        self._storage.record_defect(
+            camera_id=cam_id,
+            batch_id=batch_id,
+            image_path=image_path,
+            annotated_path="",
+            detected_count=0,
+            expected_count=0,
+            timestamp_str="",
+        )
         self._status_bar.showMessage(
             f"[CAM {cam_id}] Missing item saved: {image_path}", 4000
         )
@@ -1316,19 +1320,21 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_plc_connected(self) -> None:
-        """Show PLC connection status in the status bar."""
-        self._status_bar.showMessage(
-            f"PLC connected | {settings.PLC_IP}  DB{settings.PLC_DB_NUMBER}", 5000
-        )
-        logger.info("PLC connected | ip=%s", settings.PLC_IP)
+        if settings.PROFINET_ENABLED:
+            msg = f"PROFINET AR established | station={settings.PROFINET_STATION_NAME}  ip={settings.PROFINET_IP}"
+        else:
+            msg = f"PLC connected | {settings.PLC_IP}  DB{settings.PLC_DB_NUMBER}"
+        self._status_bar.showMessage(msg, 5000)
+        logger.info(msg)
 
     @Slot()
     def _on_plc_disconnected(self) -> None:
-        """Show PLC disconnection in the status bar."""
-        self._status_bar.showMessage(
-            f"PLC disconnected | {settings.PLC_IP} — reconnecting…", 5000
-        )
-        logger.warning("PLC disconnected | ip=%s", settings.PLC_IP)
+        if settings.PROFINET_ENABLED:
+            msg = f"PROFINET AR released | {settings.PROFINET_STATION_NAME} — waiting for controller"
+        else:
+            msg = f"PLC disconnected | {settings.PLC_IP} — reconnecting…"
+        self._status_bar.showMessage(msg, 5000)
+        logger.info(msg)
 
     @Slot(str)
     def _on_plc_error(self, message: str) -> None:
@@ -1756,7 +1762,7 @@ class MainWindow(QMainWindow):
 
         # Reset global counter and title
         self._global_total_detected = 0
-        self._update_total_counter()
+        self._update_total_counter_label()
         self.setWindowTitle(f"QC System - {len(self._camera_ids)}-Camera Inspection")
 
         logger.info("Camera grid reloaded | new cameras=%s", self._camera_ids)

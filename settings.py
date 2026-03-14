@@ -377,6 +377,14 @@ PROFINET_GATEWAY:      str   = str(_pn_cfg.get("gateway", "192.168.0.1"))
 PROFINET_CYCLE_MS:     int   = int(_pn_cfg.get("cycle_time_ms", 4))
 PROFINET_WATCHDOG_MS:  int   = int(_pn_cfg.get("watchdog_ms", 200))
 
+if PLC_ENABLED and PROFINET_ENABLED:
+    import sys as _sys
+    print(
+        "[settings] WARNING: both plc.enabled and profinet.enabled are true. "
+        "PROFINET takes precedence. Set plc.enabled=false to suppress this warning.",
+        file=_sys.stderr,
+    )
+
 # ===========================================================================
 # 8. Authentication mode — operator-editable via settings.json
 # ===========================================================================
