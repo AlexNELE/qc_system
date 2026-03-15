@@ -24,20 +24,29 @@
         "reconnect_delay": 3.0,
         "reconnect_max": 30.0
     },
-  "profinet": {
-    "enabled": true,
-    "interface": "Ethernet",
-    "station_name": "qc-inspection-sys",
-    "mac_address": "",
-    "ip_address": "192.168.0.2",
-    "subnet_mask": "255.255.255.0",
-    "gateway": "192.168.0.1",
-    "cycle_time_ms": 4,
-    "watchdog_ms": 200
-  },
+    "profinet": {
+        "enabled": false,
+        "interface": "Ethernet",
+        "station_name": "qc-inspection-sys",
+        "mac_address": "",
+        "ip_address": "192.168.0.2",
+        "subnet_mask": "255.255.255.0",
+        "gateway": "192.168.0.1",
+        "cycle_time_ms": 4,
+        "watchdog_ms": 200
+    },
+    "beckhoff": {
+        "enabled": false,
+        "ams_net_id": "5.80.201.232.1.1",
+        "ams_port": 851,
+        "symbol_name": "GVL.stQC",
+        "poll_interval_ms": 50,
+        "reconnect_delay": 3.0,
+        "reconnect_max": 30.0
+    },
     "auth": {
         "login_required": true,
-        "active_directory_enabled":true,
+        "active_directory_enabled": true,
         "no_auth_default_role": "ADMIN",
         "ldap_servers": [
             "dc1.example.com",

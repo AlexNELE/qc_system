@@ -52,6 +52,36 @@ _DEFAULTS: dict = {
     "camera_reconnect_max": 30.0,
     "save_annotated_images": True,
     "log_level": "DEBUG",
+    "plc": {
+        "enabled": False,
+        "ip": "192.168.0.1",
+        "rack": 0,
+        "slot": 1,
+        "db_number": 100,
+        "poll_interval_ms": 50,
+        "reconnect_delay": 3.0,
+        "reconnect_max": 30.0,
+    },
+    "profinet": {
+        "enabled": False,
+        "interface": "",
+        "station_name": "qc-inspection-sys",
+        "mac_address": "",
+        "ip_address": "192.168.0.2",
+        "subnet_mask": "255.255.255.0",
+        "gateway": "192.168.0.1",
+        "cycle_time_ms": 4,
+        "watchdog_ms": 200,
+    },
+    "beckhoff": {
+        "enabled": False,
+        "ams_net_id": "5.80.201.232.1.1",
+        "ams_port": 851,
+        "symbol_name": "GVL.stQC",
+        "poll_interval_ms": 50,
+        "reconnect_delay": 3.0,
+        "reconnect_max": 30.0,
+    },
     "auth": {
         "active_directory_enabled": True,
         "login_required": True,
@@ -377,11 +407,39 @@ PROFINET_GATEWAY:      str   = str(_pn_cfg.get("gateway", "192.168.0.1"))
 PROFINET_CYCLE_MS:     int   = int(_pn_cfg.get("cycle_time_ms", 4))
 PROFINET_WATCHDOG_MS:  int   = int(_pn_cfg.get("watchdog_ms", 200))
 
-if PLC_ENABLED and PROFINET_ENABLED:
+# ===========================================================================
+# 7d. Beckhoff TwinCAT ADS interface
+#     IT-configurable via the "beckhoff" section of settings.json.
+#
+#     settings.json "beckhoff" keys (all optional — defaults shown):
+#       enabled           : false            — set true to activate ADS thread
+#       ams_net_id        : "5.80.201.232.1.1" — AMS Net ID of TwinCAT runtime
+#       ams_port          : 851              — ADS port (851 = TC3 PLC Runtime 1)
+#       symbol_name       : "GVL.stQC"      — PLC symbol for the 16-byte struct
+#       poll_interval_ms  : 50               — read/write cycle period in ms
+#       reconnect_delay   : 3.0              — initial reconnect wait in seconds
+#       reconnect_max     : 30.0             — maximum reconnect back-off cap
+# ===========================================================================
+_bk_cfg: dict = _cfg.get("beckhoff", {})
+
+BECKHOFF_ENABLED:          bool  = bool(_bk_cfg.get("enabled", False))
+BECKHOFF_AMS_NET_ID:       str   = str(_bk_cfg.get("ams_net_id", "5.80.201.232.1.1"))
+BECKHOFF_AMS_PORT:         int   = int(_bk_cfg.get("ams_port", 851))
+BECKHOFF_SYMBOL_NAME:      str   = str(_bk_cfg.get("symbol_name", "GVL.stQC"))
+BECKHOFF_POLL_INTERVAL_MS: int   = int(_bk_cfg.get("poll_interval_ms", 50))
+BECKHOFF_RECONNECT_DELAY:  float = float(_bk_cfg.get("reconnect_delay", 3.0))
+BECKHOFF_RECONNECT_MAX:    float = float(_bk_cfg.get("reconnect_max", 30.0))
+
+# ---------------------------------------------------------------------------
+# Priority check: only one fieldbus interface should be active
+# ---------------------------------------------------------------------------
+_active_fieldbus = sum([PLC_ENABLED, PROFINET_ENABLED, BECKHOFF_ENABLED])
+if _active_fieldbus > 1:
     import sys as _sys
     print(
-        "[settings] WARNING: both plc.enabled and profinet.enabled are true. "
-        "PROFINET takes precedence. Set plc.enabled=false to suppress this warning.",
+        "[settings] WARNING: multiple fieldbus interfaces enabled "
+        "(plc/profinet/beckhoff). Priority: PROFINET > Beckhoff > S7. "
+        "Disable unused interfaces to suppress this warning.",
         file=_sys.stderr,
     )
 

@@ -16,6 +16,7 @@
 import sys
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
@@ -39,6 +40,8 @@ a = Analysis(
         (str(ROOT / 'logs'),    'logs'),
         # GSDML device description for TIA Portal / PROFINET IO (Mode B).
         (str(ROOT / 'plc'),     'plc'),
+        # PDF user manual — accessible via Help menu at runtime.
+        (str(ROOT / 'docs'),    'docs'),
     ],
     hiddenimports=[
         # ONNX Runtime execution providers
@@ -67,25 +70,11 @@ a = Analysis(
         'snap7.client',
         'snap7.util',
         'snap7.types',
-        # PROFINET IO Device stack (Mode B) — lazy imports, must be listed explicitly
+        # PROFINET IO Device stack (Mode B) — collected automatically
+        *collect_submodules('services.profinet_io'),
         'services.profinet_service',
-        'services.profinet_io',
-        'services.profinet_io.constants',
-        'services.profinet_io.dcp',
-        'services.profinet_io.cm',
-        'services.profinet_io.rt',
-        # scapy has many dynamic layer imports
-        'scapy',
-        'scapy.all',
-        'scapy.layers.l2',
-        'scapy.layers.inet',
-        'scapy.sendrecv',
-        'scapy.arch',
-        'scapy.arch.windows',
-        'scapy.arch.windows.native',
-        'scapy.packet',
-        'scapy.fields',
-        'scapy.config',
+        # scapy — collected automatically (many dynamic layer imports)
+        *collect_submodules('scapy'),
     ],
     hookspath=[],
     hooksconfig={},

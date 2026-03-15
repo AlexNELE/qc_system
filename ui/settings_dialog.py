@@ -206,6 +206,8 @@ class SettingsDialog(QDialog):
         self._build_tab_model()
         self._build_tab_system()
         self._build_tab_plc()
+        self._build_tab_profinet()
+        self._build_tab_beckhoff()
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -468,10 +470,183 @@ class SettingsDialog(QDialog):
         reconnect_row.addLayout(max_col)
         lay.addLayout(reconnect_row)
 
-        lay.addWidget(_restart_banner("PLC settings require a full application restart to take effect."))
-
         lay.addStretch()
         self._tabs.addTab(page, "PLC")
+
+    def _build_tab_profinet(self) -> None:
+        page = QWidget()
+        lay  = QVBoxLayout(page)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(12)
+
+        self._pn_enabled_chk = QCheckBox("Enable PROFINET IO Device interface")
+        lay.addWidget(self._pn_enabled_chk)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"QFrame {{ background-color: {_C_SEP}; border: none; }}")
+        lay.addWidget(sep)
+
+        # Interface
+        lay.addWidget(_make_label("Network interface name (e.g. Ethernet, eth0)"))
+        self._pn_interface_edit = QLineEdit()
+        self._pn_interface_edit.setMinimumHeight(34)
+        self._pn_interface_edit.setPlaceholderText("Ethernet")
+        lay.addWidget(self._pn_interface_edit)
+
+        # Station name
+        lay.addWidget(_make_label("PROFINET station name"))
+        self._pn_station_edit = QLineEdit()
+        self._pn_station_edit.setMinimumHeight(34)
+        self._pn_station_edit.setPlaceholderText("qc-inspection-sys")
+        lay.addWidget(self._pn_station_edit)
+
+        # MAC address
+        lay.addWidget(_make_label("MAC address (AA:BB:CC:DD:EE:FF)"))
+        self._pn_mac_edit = QLineEdit()
+        self._pn_mac_edit.setMinimumHeight(34)
+        self._pn_mac_edit.setPlaceholderText("00:01:05:FF:FF:01")
+        lay.addWidget(self._pn_mac_edit)
+
+        # IP / Subnet / Gateway row
+        ip_row = QHBoxLayout()
+        ip_col = QVBoxLayout()
+        ip_col.setSpacing(4)
+        ip_col.addWidget(_make_label("IP address"))
+        self._pn_ip_edit = QLineEdit()
+        self._pn_ip_edit.setMinimumHeight(34)
+        self._pn_ip_edit.setPlaceholderText("192.168.0.2")
+        ip_col.addWidget(self._pn_ip_edit)
+
+        subnet_col = QVBoxLayout()
+        subnet_col.setSpacing(4)
+        subnet_col.addWidget(_make_label("Subnet mask"))
+        self._pn_subnet_edit = QLineEdit()
+        self._pn_subnet_edit.setMinimumHeight(34)
+        self._pn_subnet_edit.setPlaceholderText("255.255.255.0")
+        subnet_col.addWidget(self._pn_subnet_edit)
+
+        gw_col = QVBoxLayout()
+        gw_col.setSpacing(4)
+        gw_col.addWidget(_make_label("Gateway"))
+        self._pn_gateway_edit = QLineEdit()
+        self._pn_gateway_edit.setMinimumHeight(34)
+        self._pn_gateway_edit.setPlaceholderText("192.168.0.1")
+        gw_col.addWidget(self._pn_gateway_edit)
+
+        ip_row.addLayout(ip_col)
+        ip_row.addLayout(subnet_col)
+        ip_row.addLayout(gw_col)
+        lay.addLayout(ip_row)
+
+        # Cycle time and watchdog
+        timing_row = QHBoxLayout()
+        cycle_col = QVBoxLayout()
+        cycle_col.setSpacing(4)
+        cycle_col.addWidget(_make_label("Cycle time (ms)"))
+        self._pn_cycle_spin = QSpinBox()
+        self._pn_cycle_spin.setRange(1, 128)
+        self._pn_cycle_spin.setSuffix(" ms")
+        self._pn_cycle_spin.setMinimumHeight(34)
+        cycle_col.addWidget(self._pn_cycle_spin)
+
+        wd_col = QVBoxLayout()
+        wd_col.setSpacing(4)
+        wd_col.addWidget(_make_label("Watchdog timeout (ms)"))
+        self._pn_watchdog_spin = QSpinBox()
+        self._pn_watchdog_spin.setRange(50, 5000)
+        self._pn_watchdog_spin.setSuffix(" ms")
+        self._pn_watchdog_spin.setMinimumHeight(34)
+        wd_col.addWidget(self._pn_watchdog_spin)
+
+        timing_row.addLayout(cycle_col)
+        timing_row.addLayout(wd_col)
+        lay.addLayout(timing_row)
+
+        lay.addStretch()
+        self._tabs.addTab(page, "PROFINET")
+
+    def _build_tab_beckhoff(self) -> None:
+        page = QWidget()
+        lay  = QVBoxLayout(page)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(12)
+
+        self._bk_enabled_chk = QCheckBox("Enable Beckhoff TwinCAT ADS interface")
+        lay.addWidget(self._bk_enabled_chk)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"QFrame {{ background-color: {_C_SEP}; border: none; }}")
+        lay.addWidget(sep)
+
+        # AMS Net ID
+        lay.addWidget(_make_label("AMS Net ID (e.g. 5.80.201.232.1.1)"))
+        self._bk_ams_id_edit = QLineEdit()
+        self._bk_ams_id_edit.setMinimumHeight(34)
+        self._bk_ams_id_edit.setPlaceholderText("5.80.201.232.1.1")
+        lay.addWidget(self._bk_ams_id_edit)
+
+        # AMS Port and Symbol Name row
+        port_sym_row = QHBoxLayout()
+        port_col = QVBoxLayout()
+        port_col.setSpacing(4)
+        port_col.addWidget(_make_label("AMS port (851 = TC3 PLC Runtime 1)"))
+        self._bk_port_spin = QSpinBox()
+        self._bk_port_spin.setRange(1, 65535)
+        self._bk_port_spin.setMinimumHeight(34)
+        port_col.addWidget(self._bk_port_spin)
+
+        sym_col = QVBoxLayout()
+        sym_col.setSpacing(4)
+        sym_col.addWidget(_make_label("PLC symbol name"))
+        self._bk_symbol_edit = QLineEdit()
+        self._bk_symbol_edit.setMinimumHeight(34)
+        self._bk_symbol_edit.setPlaceholderText("GVL.stQC")
+        sym_col.addWidget(self._bk_symbol_edit)
+
+        port_sym_row.addLayout(port_col)
+        port_sym_row.addLayout(sym_col)
+        lay.addLayout(port_sym_row)
+
+        # Poll interval
+        lay.addWidget(_make_label("Poll interval (ms) — read/write cycle period"))
+        self._bk_poll_spin = QSpinBox()
+        self._bk_poll_spin.setRange(10, 1000)
+        self._bk_poll_spin.setSuffix(" ms")
+        self._bk_poll_spin.setMinimumHeight(34)
+        lay.addWidget(self._bk_poll_spin)
+
+        # Reconnect delay
+        reconnect_row = QHBoxLayout()
+        delay_col = QVBoxLayout()
+        delay_col.setSpacing(4)
+        delay_col.addWidget(_make_label("Initial reconnect delay (s)"))
+        self._bk_reconnect_spin = QDoubleSpinBox()
+        self._bk_reconnect_spin.setRange(0.5, 60.0)
+        self._bk_reconnect_spin.setSingleStep(0.5)
+        self._bk_reconnect_spin.setDecimals(1)
+        self._bk_reconnect_spin.setMinimumHeight(34)
+        delay_col.addWidget(self._bk_reconnect_spin)
+
+        max_col = QVBoxLayout()
+        max_col.setSpacing(4)
+        max_col.addWidget(_make_label("Max reconnect delay (s)"))
+        self._bk_reconnect_max_spin = QDoubleSpinBox()
+        self._bk_reconnect_max_spin.setRange(5.0, 300.0)
+        self._bk_reconnect_max_spin.setSingleStep(1.0)
+        self._bk_reconnect_max_spin.setDecimals(1)
+        self._bk_reconnect_max_spin.setMinimumHeight(34)
+        max_col.addWidget(self._bk_reconnect_max_spin)
+
+        reconnect_row.addLayout(delay_col)
+        reconnect_row.addLayout(max_col)
+        lay.addLayout(reconnect_row)
+
+        lay.addStretch()
+        self._tabs.addTab(page, "Beckhoff")
 
     # ------------------------------------------------------------------
     # Load current values into widgets
@@ -519,6 +694,26 @@ class SettingsDialog(QDialog):
         self._plc_poll_spin.setValue(settings.PLC_POLL_INTERVAL_MS)
         self._plc_reconnect_spin.setValue(settings.PLC_RECONNECT_DELAY)
         self._plc_reconnect_max_spin.setValue(settings.PLC_RECONNECT_MAX)
+
+        # PROFINET tab
+        self._pn_enabled_chk.setChecked(settings.PROFINET_ENABLED)
+        self._pn_interface_edit.setText(settings.PROFINET_INTERFACE)
+        self._pn_station_edit.setText(settings.PROFINET_STATION_NAME)
+        self._pn_mac_edit.setText(settings.PROFINET_MAC)
+        self._pn_ip_edit.setText(settings.PROFINET_IP)
+        self._pn_subnet_edit.setText(settings.PROFINET_SUBNET)
+        self._pn_gateway_edit.setText(settings.PROFINET_GATEWAY)
+        self._pn_cycle_spin.setValue(settings.PROFINET_CYCLE_MS)
+        self._pn_watchdog_spin.setValue(settings.PROFINET_WATCHDOG_MS)
+
+        # Beckhoff tab
+        self._bk_enabled_chk.setChecked(settings.BECKHOFF_ENABLED)
+        self._bk_ams_id_edit.setText(settings.BECKHOFF_AMS_NET_ID)
+        self._bk_port_spin.setValue(settings.BECKHOFF_AMS_PORT)
+        self._bk_symbol_edit.setText(settings.BECKHOFF_SYMBOL_NAME)
+        self._bk_poll_spin.setValue(settings.BECKHOFF_POLL_INTERVAL_MS)
+        self._bk_reconnect_spin.setValue(settings.BECKHOFF_RECONNECT_DELAY)
+        self._bk_reconnect_max_spin.setValue(settings.BECKHOFF_RECONNECT_MAX)
 
     # ------------------------------------------------------------------
     # Slots
@@ -619,6 +814,36 @@ class SettingsDialog(QDialog):
             self._tabs.setCurrentIndex(4)
             return
 
+        # PROFINET settings
+        pn_enabled   = self._pn_enabled_chk.isChecked()
+        pn_interface = self._pn_interface_edit.text().strip()
+        pn_station   = self._pn_station_edit.text().strip()
+        pn_mac       = self._pn_mac_edit.text().strip()
+        pn_ip        = self._pn_ip_edit.text().strip()
+        pn_subnet    = self._pn_subnet_edit.text().strip()
+        pn_gateway   = self._pn_gateway_edit.text().strip()
+        pn_cycle     = self._pn_cycle_spin.value()
+        pn_watchdog  = self._pn_watchdog_spin.value()
+
+        if pn_enabled and (not pn_interface or not pn_mac):
+            self._show_error("PROFINET interface and MAC address are required when enabled.")
+            self._tabs.setCurrentIndex(5)
+            return
+
+        # Beckhoff settings
+        bk_enabled       = self._bk_enabled_chk.isChecked()
+        bk_ams_id        = self._bk_ams_id_edit.text().strip()
+        bk_port          = self._bk_port_spin.value()
+        bk_symbol        = self._bk_symbol_edit.text().strip()
+        bk_poll          = self._bk_poll_spin.value()
+        bk_reconnect     = self._bk_reconnect_spin.value()
+        bk_reconnect_max = self._bk_reconnect_max_spin.value()
+
+        if bk_enabled and not bk_ams_id:
+            self._show_error("AMS Net ID cannot be empty when Beckhoff is enabled.")
+            self._tabs.setCurrentIndex(6)
+            return
+
         # ── Build merged settings dict ────────────────────────────────
         try:
             current_json: dict = json.loads(
@@ -659,6 +884,34 @@ class SettingsDialog(QDialog):
         })
         current_json["plc"] = plc_section
 
+        # Merge PROFINET sub-section
+        pn_section = current_json.get("profinet", {})
+        pn_section.update({
+            "enabled":       pn_enabled,
+            "interface":     pn_interface,
+            "station_name":  pn_station,
+            "mac_address":   pn_mac,
+            "ip_address":    pn_ip,
+            "subnet_mask":   pn_subnet,
+            "gateway":       pn_gateway,
+            "cycle_time_ms": pn_cycle,
+            "watchdog_ms":   pn_watchdog,
+        })
+        current_json["profinet"] = pn_section
+
+        # Merge Beckhoff sub-section
+        bk_section = current_json.get("beckhoff", {})
+        bk_section.update({
+            "enabled":          bk_enabled,
+            "ams_net_id":       bk_ams_id,
+            "ams_port":         bk_port,
+            "symbol_name":      bk_symbol,
+            "poll_interval_ms": bk_poll,
+            "reconnect_delay":  round(bk_reconnect, 1),
+            "reconnect_max":    round(bk_reconnect_max, 1),
+        })
+        current_json["beckhoff"] = bk_section
+
         # ── Write to disk ─────────────────────────────────────────────
         try:
             settings.CONFIG_PATH.write_text(
@@ -692,6 +945,26 @@ class SettingsDialog(QDialog):
         settings.PLC_POLL_INTERVAL_MS = plc_poll
         settings.PLC_RECONNECT_DELAY  = plc_reconnect
         settings.PLC_RECONNECT_MAX    = plc_reconnect_max
+
+        # Apply PROFINET settings (restart required)
+        settings.PROFINET_ENABLED      = pn_enabled
+        settings.PROFINET_INTERFACE    = pn_interface
+        settings.PROFINET_STATION_NAME = pn_station
+        settings.PROFINET_MAC          = pn_mac
+        settings.PROFINET_IP           = pn_ip
+        settings.PROFINET_SUBNET       = pn_subnet
+        settings.PROFINET_GATEWAY      = pn_gateway
+        settings.PROFINET_CYCLE_MS     = pn_cycle
+        settings.PROFINET_WATCHDOG_MS  = pn_watchdog
+
+        # Apply Beckhoff settings (restart required)
+        settings.BECKHOFF_ENABLED          = bk_enabled
+        settings.BECKHOFF_AMS_NET_ID       = bk_ams_id
+        settings.BECKHOFF_AMS_PORT         = bk_port
+        settings.BECKHOFF_SYMBOL_NAME      = bk_symbol
+        settings.BECKHOFF_POLL_INTERVAL_MS = bk_poll
+        settings.BECKHOFF_RECONNECT_DELAY  = bk_reconnect
+        settings.BECKHOFF_RECONNECT_MAX    = bk_reconnect_max
 
         numeric_level = getattr(logging, log_level.upper(), logging.DEBUG)
         logging.getLogger().setLevel(numeric_level)

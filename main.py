@@ -379,6 +379,12 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------------
+    # Audit trail — log application start
+    # ------------------------------------------------------------------
+    from services.audit_service import log_event
+    log_event("APP_START", user=session.username, role=session.role.name)
+
+    # ------------------------------------------------------------------
     # Main window
     # ------------------------------------------------------------------
     from ui.main_window import MainWindow
@@ -388,5 +394,10 @@ if __name__ == "__main__":
 
     logger.info("Event loop started")
     exit_code = app.exec()
+
+    log_event("APP_SHUTDOWN", user=session.username, role=session.role.name)
+    from services.audit_service import audit_log
+    audit_log.close()
+
     logger.info("Event loop exited with code %d", exit_code)
     sys.exit(exit_code)

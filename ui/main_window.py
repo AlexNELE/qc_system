@@ -134,6 +134,8 @@ from services.camera_service import CameraService
 from services.defect_service import DefectService
 from services.inference_service import MissingEvent, InferenceService
 from services.plc_service import PLCService
+from services.beckhoff_service import BeckhoffService
+from services.audit_service import log_event as _audit
 from services.report_service import ReportService
 from services.storage_service import StorageService
 from ui.camera_panel import CameraPanel
@@ -274,7 +276,7 @@ class MainWindow(QMainWindow):
         # Mode A: snap7 ISO TCP (PLCService)
         # Mode B: PROFINET IO Device (ProfinetService)
         # Both expose the same signal/write API; _plc holds whichever is active.
-        self._plc: Optional[PLCService | ProfinetService] = None
+        self._plc: Optional[PLCService | ProfinetService | BeckhoffService] = None
 
         if settings.PROFINET_ENABLED:
             if not settings.PROFINET_INTERFACE or not settings.PROFINET_MAC:
@@ -306,6 +308,19 @@ class MainWindow(QMainWindow):
                     settings.PROFINET_STATION_NAME,
                     settings.PROFINET_IP,
                 )
+        elif settings.BECKHOFF_ENABLED:
+            self._plc = BeckhoffService(parent=self)
+            self._plc.trigger_received.connect(self._on_plc_trigger)
+            self._plc.plc_connected.connect(self._on_plc_connected)
+            self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+            self._plc.plc_error.connect(self._on_plc_error)
+            self._plc.start()
+            logger.info(
+                "BeckhoffService started | ams=%s:%d symbol=%s",
+                settings.BECKHOFF_AMS_NET_ID,
+                settings.BECKHOFF_AMS_PORT,
+                settings.BECKHOFF_SYMBOL_NAME,
+            )
         elif settings.PLC_ENABLED:
             self._plc = PLCService(parent=self)
             self._plc.trigger_received.connect(self._on_plc_trigger)
@@ -318,7 +333,7 @@ class MainWindow(QMainWindow):
                 settings.PLC_IP, settings.PLC_DB_NUMBER,
             )
         else:
-            logger.info("PLC interface disabled (plc.enabled=false in settings.json)")
+            logger.info("PLC interface disabled (all fieldbus interfaces disabled in settings.json)")
 
         # --- Batch state ---
         self._batch_running:    bool            = False
@@ -932,6 +947,15 @@ class MainWindow(QMainWindow):
             3000,
         )
 
+        session = auth.get_session()
+        _audit("CAPTURE",
+               user=session.username if session else "",
+               role=session.role.name if session else "",
+               camera_id=cam_id, batch_id=batch_id,
+               status=count_result.status,
+               detected=count_result.detected_count,
+               expected=count_result.expected_count)
+
     # ------------------------------------------------------------------
     # Batch flow
     # ------------------------------------------------------------------
@@ -1010,6 +1034,12 @@ class MainWindow(QMainWindow):
             self._plc.write_batch_state(active=True, batch_id=batch_id)
             self._plc.write_system_ready(True)
 
+        session = auth.get_session()
+        _audit("BATCH_START",
+               user=session.username if session else "",
+               role=session.role.name if session else "",
+               batch_id=batch_id)
+
         self._status_bar.showMessage(
             f"Batch '{batch_id}' started — {len(self._camera_ids)} cameras active"
         )
@@ -1062,6 +1092,16 @@ class MainWindow(QMainWindow):
             f"Batch '{batch_id}' ended — generating PDF report..."
         )
         self._start_report_generation(batch_id, batch_start_time, batch_end_time)
+
+        total_ok      = sum(self._batch_ok_count.values())
+        total_missing = sum(self._batch_missing_count.values())
+        session = auth.get_session()
+        _audit("BATCH_END",
+               user=session.username if session else "",
+               role=session.role.name if session else "",
+               batch_id=batch_id,
+               ok_count=total_ok,
+               defect_count=total_missing)
 
         logger.info("Batch '%s' ended — report generation started", batch_id)
 
@@ -1322,19 +1362,25 @@ class MainWindow(QMainWindow):
     def _on_plc_connected(self) -> None:
         if settings.PROFINET_ENABLED:
             msg = f"PROFINET AR established | station={settings.PROFINET_STATION_NAME}  ip={settings.PROFINET_IP}"
+        elif settings.BECKHOFF_ENABLED:
+            msg = f"Beckhoff ADS connected | {settings.BECKHOFF_AMS_NET_ID}:{settings.BECKHOFF_AMS_PORT}"
         else:
             msg = f"PLC connected | {settings.PLC_IP}  DB{settings.PLC_DB_NUMBER}"
         self._status_bar.showMessage(msg, 5000)
         logger.info(msg)
+        _audit("PLC_CONNECTED", detail=msg)
 
     @Slot()
     def _on_plc_disconnected(self) -> None:
         if settings.PROFINET_ENABLED:
             msg = f"PROFINET AR released | {settings.PROFINET_STATION_NAME} — waiting for controller"
+        elif settings.BECKHOFF_ENABLED:
+            msg = f"Beckhoff ADS disconnected | {settings.BECKHOFF_AMS_NET_ID} — reconnecting…"
         else:
             msg = f"PLC disconnected | {settings.PLC_IP} — reconnecting…"
         self._status_bar.showMessage(msg, 5000)
         logger.info(msg)
+        _audit("PLC_DISCONNECTED", detail=msg)
 
     @Slot(str)
     def _on_plc_error(self, message: str) -> None:
@@ -1545,13 +1591,12 @@ class MainWindow(QMainWindow):
 
         Unified logic (applies regardless of AUTH_AD_ENABLED):
         - session.authenticated_via == 'no_auth'   -> show static chip
-              (reserved for future deployments; not reached from main.py)
-        - session is None or authenticated_via == 'guest'
+        - session is None or authenticated_via == 'guest'/'auto'
                                                    -> show Login button
         - any other authenticated_via              -> show user chip with
               popup menu (Change Password + Log Off)
         """
-        session = auth.current_session
+        session = auth.get_session()
 
         if session is not None and session.authenticated_via == "no_auth":
             # Static no-interaction chip — AD fully disabled, no local login.
@@ -1600,16 +1645,16 @@ class MainWindow(QMainWindow):
         dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
         accepted = dialog.exec()
 
-        # auth.set_session() is called inside the dialog on success, but as a
-        # safety net (e.g. force-password-change path) also apply dialog.session
-        # if the dialog was accepted and the global session wasn't updated yet.
+        # Always apply the session from the dialog if it was accepted.
+        # _on_auth_succeeded inside the dialog already calls auth.set_session(),
+        # but we re-apply here as a safety net for edge cases (e.g. force
+        # password change flow, PySide6 signal delivery timing).
         if accepted and dialog.session is not None:
-            if auth.current_session is None or auth.current_session.authenticated_via in ("guest", "auto", "no_auth"):
-                auth.set_session(dialog.session)
+            auth.set_session(dialog.session)
 
         self._refresh_login_widget()
 
-        session = auth.current_session
+        session = auth.get_session()
         if session is not None and session.authenticated_via not in ("guest", "auto", "no_auth"):
             logger.info(
                 "Login accepted via header button | user=%s role=%s via=%s",
@@ -1619,6 +1664,8 @@ class MainWindow(QMainWindow):
                 f"Logged in as {session.display_name} [{session.role_display()}]",
                 4000,
             )
+            _audit("LOGIN", user=session.username, role=session.role.name,
+                   via=session.authenticated_via)
         else:
             logger.info("Login dialog cancelled — guest session remains active")
 
@@ -1647,6 +1694,10 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
             self._batch_end()
+
+        old_session = auth.get_session()
+        if old_session is not None:
+            _audit("LOGOUT", user=old_session.username, role=old_session.role.name)
 
         import settings as _s
         if not _s.AUTH_AD_ENABLED:
@@ -1843,14 +1894,97 @@ class MainWindow(QMainWindow):
             "Authentication settings changed — please log in again.", 6000
         )
 
+    def _reload_fieldbus(self) -> None:
+        """
+        Stop the current PLC/PROFINET/Beckhoff service and start the newly
+        configured one (hot-reload without application restart).
+
+        Priority order: PROFINET > Beckhoff > S7 (snap7).
+        If all are disabled, _plc is set to None.
+        """
+        # Stop the currently running service
+        if self._plc is not None:
+            logger.info("Stopping fieldbus service for hot-reload...")
+            self._plc.stop()
+            self._plc = None
+
+        # Start the newly configured service
+        if settings.PROFINET_ENABLED:
+            if not settings.PROFINET_INTERFACE or not settings.PROFINET_MAC:
+                logger.warning(
+                    "ProfinetService not started: interface and mac_address required"
+                )
+                self._status_bar.showMessage(
+                    "PROFINET enabled but interface/MAC not set — service not started.", 6000
+                )
+            else:
+                from services.profinet_service import ProfinetService
+                self._plc = ProfinetService(
+                    interface=settings.PROFINET_INTERFACE,
+                    station_name=settings.PROFINET_STATION_NAME,
+                    mac_address=settings.PROFINET_MAC,
+                    ip_address=settings.PROFINET_IP,
+                    subnet_mask=settings.PROFINET_SUBNET,
+                    gateway=settings.PROFINET_GATEWAY,
+                    cycle_time_ms=settings.PROFINET_CYCLE_MS,
+                    watchdog_ms=settings.PROFINET_WATCHDOG_MS,
+                    parent=self,
+                )
+                self._plc.trigger_received.connect(self._on_plc_trigger)
+                self._plc.plc_connected.connect(self._on_plc_connected)
+                self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+                self._plc.plc_error.connect(self._on_plc_error)
+                self._plc.start()
+                logger.info(
+                    "ProfinetService hot-reloaded | iface=%s station=%s",
+                    settings.PROFINET_INTERFACE, settings.PROFINET_STATION_NAME,
+                )
+                self._status_bar.showMessage("PROFINET service started.", 4000)
+
+        elif settings.BECKHOFF_ENABLED:
+            self._plc = BeckhoffService(parent=self)
+            self._plc.trigger_received.connect(self._on_plc_trigger)
+            self._plc.plc_connected.connect(self._on_plc_connected)
+            self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+            self._plc.plc_error.connect(self._on_plc_error)
+            self._plc.start()
+            logger.info(
+                "BeckhoffService hot-reloaded | ams=%s:%d",
+                settings.BECKHOFF_AMS_NET_ID, settings.BECKHOFF_AMS_PORT,
+            )
+            self._status_bar.showMessage("Beckhoff ADS service started.", 4000)
+
+        elif settings.PLC_ENABLED:
+            self._plc = PLCService(parent=self)
+            self._plc.trigger_received.connect(self._on_plc_trigger)
+            self._plc.plc_connected.connect(self._on_plc_connected)
+            self._plc.plc_disconnected.connect(self._on_plc_disconnected)
+            self._plc.plc_error.connect(self._on_plc_error)
+            self._plc.start()
+            logger.info(
+                "PLCService hot-reloaded | ip=%s db=DB%d",
+                settings.PLC_IP, settings.PLC_DB_NUMBER,
+            )
+            self._status_bar.showMessage("S7 PLC service started.", 4000)
+
+        else:
+            logger.info("All fieldbus interfaces disabled")
+            self._status_bar.showMessage("Fieldbus interface disabled.", 4000)
+
     @require_permission(PERM_CHANGE_SETTINGS)
     def _on_open_settings(self) -> None:
         """Open the live application settings dialog (Admin/Supervisor only)."""
         from ui.settings_dialog import SettingsDialog
 
-        old_cameras = list(settings.CAMERAS)
-        old_model   = settings.MODEL_PATH
-        old_ad      = settings.AUTH_AD_ENABLED
+        old_cameras  = list(settings.CAMERAS)
+        old_model    = settings.MODEL_PATH
+        old_ad       = settings.AUTH_AD_ENABLED
+        old_plc      = settings.PLC_ENABLED
+        old_plc_ip   = settings.PLC_IP
+        old_pn       = settings.PROFINET_ENABLED
+        old_pn_iface = settings.PROFINET_INTERFACE
+        old_bk       = settings.BECKHOFF_ENABLED
+        old_bk_ams   = settings.BECKHOFF_AMS_NET_ID
 
         dlg = SettingsDialog(parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1860,6 +1994,16 @@ class MainWindow(QMainWindow):
         model_changed   = settings.MODEL_PATH    != old_model
         auth_changed    = settings.AUTH_AD_ENABLED != old_ad
 
+        # Check if any fieldbus setting changed
+        fieldbus_changed = (
+            settings.PLC_ENABLED        != old_plc
+            or settings.PLC_IP          != old_plc_ip
+            or settings.PROFINET_ENABLED != old_pn
+            or settings.PROFINET_INTERFACE != old_pn_iface
+            or settings.BECKHOFF_ENABLED != old_bk
+            or settings.BECKHOFF_AMS_NET_ID != old_bk_ams
+        )
+
         if cameras_changed:
             self._reload_cameras()
         elif model_changed:
@@ -1868,6 +2012,19 @@ class MainWindow(QMainWindow):
 
         if auth_changed:
             self._reload_auth()
+
+        if fieldbus_changed:
+            self._reload_fieldbus()
+
+        # Audit trail — log settings change
+        session = auth.get_session()
+        _audit("SETTINGS_CHANGED",
+               user=session.username if session else "",
+               role=session.role.name if session else "",
+               cameras_changed=cameras_changed,
+               model_changed=model_changed,
+               auth_changed=auth_changed,
+               fieldbus_changed=fieldbus_changed)
 
     @Slot()
     @require_permission(PERM_MANAGE_USERS)
