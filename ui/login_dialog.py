@@ -31,6 +31,7 @@ Additional inline styles keep the dialog compact and consistent.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from PySide6.QtCore import QThread, QTimer, Signal, Slot, Qt
@@ -78,24 +79,30 @@ class _AuthWorker(QThread):
     """
     Runs LDAP authentication on a dedicated thread so the UI never blocks.
 
+    The worker stores its result in thread-safe attributes so the main
+    thread can always read them after ``finished`` fires, regardless of
+    whether the cross-thread ``Signal(object)`` delivered the Python
+    reference correctly.
+
     Signals
     -------
-    succeeded(UserSession)
-        Authentication passed (either via LDAP or offline cache).
-    failed(str)
+    auth_succeeded()
+        Authentication passed.  Read ``worker.result_session`` on the
+        main thread for the UserSession.
+    auth_failed(str)
         Human-readable failure reason to display in the dialog.
     offline_fallback()
         Emitted when LDAP was unreachable and cache lookup is about to start.
-    password_change_required(UserSession)
-        Emitted instead of ``succeeded`` when the user authenticated but the
-        ``force_password_change`` flag is set — the UI must prompt for a new
-        password before accepting the session.
+    auth_password_change(str)
+        Emitted instead of ``auth_succeeded`` when the account has
+        ``force_password_change`` set.  The string payload is the username
+        (Python str transfers reliably across threads, unlike arbitrary objects).
     """
 
-    succeeded                = Signal(object)   # UserSession
-    failed                   = Signal(str)
-    offline_fallback         = Signal()
-    password_change_required = Signal(object)   # UserSession
+    auth_succeeded     = Signal()
+    auth_failed        = Signal(str)
+    offline_fallback   = Signal()
+    auth_password_change = Signal()
 
     def __init__(
         self,
@@ -110,6 +117,31 @@ class _AuthWorker(QThread):
         self._password     = password
         self._ldap_service = ldap_service  # None when AD is disabled
         self._user_cache   = user_cache
+
+        # --- Thread-safe result storage ---
+        # Written on the worker thread, read on the main thread AFTER
+        # finished() fires.  No lock needed: written once before the
+        # thread exits, read only after the thread is done (happens-before
+        # guaranteed by QThread::finished signal delivery).
+        self._lock = threading.Lock()
+        self.result_session: Optional[UserSession] = None
+        self.result_force_pw: bool = False
+        self.result_error: Optional[str] = None
+
+    def _store_result(
+        self,
+        session: Optional[UserSession] = None,
+        force_pw: bool = False,
+        error: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            self.result_session = session
+            self.result_force_pw = force_pw
+            self.result_error = error
+
+    def get_result(self) -> tuple[Optional[UserSession], bool, Optional[str]]:
+        with self._lock:
+            return self.result_session, self.result_force_pw, self.result_error
 
     def run(self) -> None:
         """
@@ -132,28 +164,31 @@ class _AuthWorker(QThread):
             logger.debug("Local account detected — skipping LDAP for user=%s", self._username)
             result = self._user_cache.authenticate_offline(self._username, self._password)
             if result is None:
-                self.failed.emit("Incorrect username or password.")
+                self._store_result(error="Incorrect username or password.")
+                self.auth_failed.emit("Incorrect username or password.")
                 return
             if result.force_password_change:
-                self.password_change_required.emit(result.session)
+                self._store_result(session=result.session, force_pw=True)
+                self.auth_password_change.emit()
             else:
-                self.succeeded.emit(result.session)
+                self._store_result(session=result.session)
+                self.auth_succeeded.emit()
             return
 
         # --- Step 2: local-only mode (AD disabled) --------------------------
-        # When ldap_service is None, every user is authenticated solely against
-        # the local cache.  AD-synced users who have previously logged in via
-        # LDAP will work here via their cached credentials.
         if self._ldap_service is None:
             logger.debug("Local-only mode — authenticating via cache for user=%s", self._username)
             result = self._user_cache.authenticate_offline(self._username, self._password)
             if result is None:
-                self.failed.emit("Incorrect username or password.")
+                self._store_result(error="Incorrect username or password.")
+                self.auth_failed.emit("Incorrect username or password.")
                 return
             if result.force_password_change:
-                self.password_change_required.emit(result.session)
+                self._store_result(session=result.session, force_pw=True)
+                self.auth_password_change.emit()
             else:
-                self.succeeded.emit(result.session)
+                self._store_result(session=result.session)
+                self.auth_succeeded.emit()
             return
 
         # --- Step 3: live LDAP ----------------------------------------------
@@ -164,7 +199,8 @@ class _AuthWorker(QThread):
                 self._user_cache.upsert_user(session, self._password)
             except Exception as cache_exc:
                 logger.warning("Failed to update user cache: %s", cache_exc)
-            self.succeeded.emit(session)
+            self._store_result(session=session)
+            self.auth_succeeded.emit()
 
         except LDAPUnavailableError as unreach_exc:
             # --- Step 4: offline cache fallback ----------------------------
@@ -173,27 +209,34 @@ class _AuthWorker(QThread):
             result = self._user_cache.authenticate_offline(self._username, self._password)
             if result is not None:
                 if result.force_password_change:
-                    self.password_change_required.emit(result.session)
+                    self._store_result(session=result.session, force_pw=True)
+                    self.auth_password_change.emit()
                 else:
-                    self.succeeded.emit(result.session)
+                    self._store_result(session=result.session)
+                    self.auth_succeeded.emit()
             else:
-                self.failed.emit(
+                msg = (
                     "Active Directory is unreachable and no offline credentials "
                     "are cached for this account.\n\n"
                     "Connect to the network and try again, or contact your administrator."
                 )
+                self._store_result(error=msg)
+                self.auth_failed.emit(msg)
 
         except LDAPAuthError as auth_exc:
             logger.warning("LDAP auth error for %s: %s", self._username, auth_exc)
-            self.failed.emit(str(auth_exc))
+            self._store_result(error=str(auth_exc))
+            self.auth_failed.emit(str(auth_exc))
 
         except Exception as exc:
             logger.error("Unexpected auth error: %s", exc, exc_info=True)
-            self.failed.emit(
+            msg = (
                 f"An unexpected error occurred during login.\n"
                 f"Details: {exc}\n\n"
                 f"Contact your system administrator."
             )
+            self._store_result(error=msg)
+            self.auth_failed.emit(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +305,7 @@ class LoginDialog(QDialog):
         self._user_cache    = user_cache
         self._session: Optional[UserSession] = None
         self._auth_worker: Optional[_AuthWorker] = None
+        self._probe: Optional[_ConnectivityProbe] = None
 
         self.setWindowTitle("QC System — Login")
         self.setModal(True)
@@ -408,9 +452,9 @@ class LoginDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _start_connectivity_probe(self) -> None:
-        probe = _ConnectivityProbe(self._ldap_service, self)
-        probe.result_ready.connect(self._on_connectivity_result)
-        probe.start()
+        self._probe = _ConnectivityProbe(self._ldap_service, self)
+        self._probe.result_ready.connect(self._on_connectivity_result)
+        self._probe.start()
 
     @Slot(bool)
     def _on_connectivity_result(self, online: bool) -> None:
@@ -450,15 +494,21 @@ class LoginDialog(QDialog):
             user_cache   = self._user_cache,
             parent       = self,
         )
-        self._auth_worker.succeeded.connect(self._on_auth_succeeded)
-        self._auth_worker.failed.connect(self._on_auth_failed)
+        self._auth_worker.auth_succeeded.connect(self._on_auth_succeeded)
+        self._auth_worker.auth_failed.connect(self._on_auth_failed)
         self._auth_worker.offline_fallback.connect(self._on_offline_fallback)
-        self._auth_worker.password_change_required.connect(self._on_password_change_required)
-        self._auth_worker.finished.connect(lambda: self._set_busy(False))
+        self._auth_worker.auth_password_change.connect(self._on_password_change_required)
+        self._auth_worker.finished.connect(self._on_worker_finished)
         self._auth_worker.start()
 
-    @Slot(object)
-    def _on_auth_succeeded(self, session: UserSession) -> None:
+    @Slot()
+    def _on_auth_succeeded(self) -> None:
+        """Called when auth worker reports success (no Python object in signal)."""
+        session = self._read_worker_session()
+        if session is None:
+            logger.error("auth_succeeded fired but worker has no session — ignoring")
+            return
+
         self._session = session
         auth.set_session(session)
         logger.info(
@@ -477,8 +527,8 @@ class LoginDialog(QDialog):
     def _on_offline_fallback(self) -> None:
         self._offline_banner.setVisible(True)
 
-    @Slot(object)
-    def _on_password_change_required(self, session: UserSession) -> None:
+    @Slot()
+    def _on_password_change_required(self) -> None:
         """
         Called when authentication succeeded but the account has
         ``force_password_change`` set.
@@ -487,6 +537,12 @@ class LoginDialog(QDialog):
         a new password successfully the dialog is accepted with the session;
         if the user cancels the login is aborted.
         """
+        session = self._read_worker_session()
+        if session is None:
+            logger.error("auth_password_change fired but worker has no session — ignoring")
+            self._show_error("Internal error: session was lost. Please try again.")
+            return
+
         from ui.password_change_dialog import PasswordChangeDialog
         dlg = PasswordChangeDialog(
             username   = session.username,
@@ -506,9 +562,21 @@ class LoginDialog(QDialog):
             self._password_edit.clear()
             self._password_edit.setFocus()
 
+    @Slot()
+    def _on_worker_finished(self) -> None:
+        """Called when the auth worker thread exits."""
+        self._set_busy(False)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _read_worker_session(self) -> Optional[UserSession]:
+        """Read the session from the auth worker's thread-safe storage."""
+        if self._auth_worker is None:
+            return None
+        session, _, _ = self._auth_worker.get_result()
+        return session
 
     def _set_busy(self, busy: bool) -> None:
         self._login_btn.setEnabled(not busy)
@@ -539,19 +607,55 @@ class LoginDialog(QDialog):
     # Graceful cleanup: ensure worker thread is stopped before dialog closes
     # ------------------------------------------------------------------
 
+    def _wait_thread(self, thread: Optional[QThread]) -> None:
+        """Wait for a worker thread to finish (up to 3 s)."""
+        if thread is not None and thread.isRunning():
+            thread.wait(3000)
+
+    def _disconnect_thread(self, thread: Optional[QThread]) -> None:
+        """Disconnect all signals from a thread."""
+        if thread is None:
+            return
+        try:
+            thread.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+
+    def done(self, result: int) -> None:
+        """Wait for background threads before the dialog closes.
+
+        Only waits — does NOT disconnect signals, because the queued
+        ``auth_succeeded`` signal may not have been delivered yet and
+        disconnecting it would silently drop the successful login.
+        """
+        self._wait_thread(self._auth_worker)
+        self._wait_thread(self._probe)
+
+        # If auth succeeded in the worker but the signal was not
+        # delivered before done() was called (e.g. user pressed Escape
+        # at the exact moment auth finished), upgrade to Accepted.
+        if result != QDialog.DialogCode.Accepted and self._auth_worker is not None:
+            session, _, _ = self._auth_worker.get_result()
+            if session is not None and self._session is None:
+                self._session = session
+                auth.set_session(session)
+                result = int(QDialog.DialogCode.Accepted)
+                logger.info(
+                    "Login recovered in done() | user=%s role=%s via=%s",
+                    session.username, session.role.name,
+                    session.authenticated_via,
+                )
+
+        # Now disconnect signals so stale deliveries can't call
+        # accept()/reject() on the already-closed dialog.
+        self._disconnect_thread(self._auth_worker)
+        self._disconnect_thread(self._probe)
+        super().done(result)
+
     def closeEvent(self, event) -> None:
-        # Disconnect all outcome signals so a still-running worker cannot
-        # call accept() on an already-closed dialog (race condition fix).
-        if self._auth_worker is not None:
-            for sig in (
-                self._auth_worker.succeeded,
-                self._auth_worker.failed,
-                self._auth_worker.offline_fallback,
-                self._auth_worker.password_change_required,
-                self._auth_worker.finished,
-            ):
-                try:
-                    sig.disconnect()
-                except RuntimeError:
-                    pass
+        # Safety net for window-manager close (X button).
+        self._disconnect_thread(self._auth_worker)
+        self._disconnect_thread(self._probe)
+        self._wait_thread(self._auth_worker)
+        self._wait_thread(self._probe)
         super().closeEvent(event)

@@ -104,8 +104,10 @@ import logging
 import math
 import os
 import queue
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -441,6 +443,24 @@ class MainWindow(QMainWindow):
         users_action.setToolTip("View cached users and set role overrides (Admin only).")
         users_action.triggered.connect(self._on_open_user_management)
         admin_menu.addAction(users_action)
+
+        audit_action = QAction("Audit Log", self)
+        audit_action.setToolTip("View and export the audit trail.")
+        audit_action.triggered.connect(self._on_open_audit_log)
+        admin_menu.addAction(audit_action)
+
+        # --- Help menu ---
+        help_menu = menu_bar.addMenu("Help")
+
+        manual_action = QAction("Open User Manual", self)
+        manual_action.setShortcut("F1")
+        manual_action.setToolTip("Open the QCSystem PDF user manual.")
+        manual_action.triggered.connect(self._on_open_manual)
+        help_menu.addAction(manual_action)
+
+        about_action2 = QAction("About", self)
+        about_action2.triggered.connect(self._show_about)
+        help_menu.addAction(about_action2)
 
     def _build_ui(self) -> None:
         """Build header bar, camera grid, and status bar."""
@@ -1450,6 +1470,29 @@ class MainWindow(QMainWindow):
         """Update the clock label in the status bar every second."""
         self._status_clock.setText(datetime.now().strftime("%H:%M:%S"))
 
+    def _on_open_manual(self) -> None:
+        """Open the PDF user manual from the docs/ directory."""
+        import os
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        # When frozen (PyInstaller), docs/ is inside the bundle.
+        if getattr(sys, "frozen", False):
+            base = Path(sys._MEIPASS)
+        else:
+            base = Path(__file__).resolve().parent.parent
+
+        manual = base / "docs" / "QCSystem_Manual.pdf"
+        if manual.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(manual)))
+        else:
+            QMessageBox.warning(
+                self,
+                "Manual Not Found",
+                f"Could not find the user manual at:\n{manual}\n\n"
+                "It may not have been included in this build.",
+            )
+
     def _show_about(self) -> None:
         n = len(self._camera_ids)
         QMessageBox.about(
@@ -1471,95 +1514,117 @@ class MainWindow(QMainWindow):
         - Not logged in / auto session: shows blue "Login" button.
         - Logged in (any real session): shows the user's name as a
           glass-pill chip; clicking opens Change Password / Log Off menu.
+
+        Implementation note:
+        Uses two separate QPushButtons in a QStackedLayout-like approach
+        (manual show/hide) so each button keeps its own fixed stylesheet.
+        This eliminates Qt style-transition bugs that can occur when
+        dynamically swapping objectName + stylesheet on a single button.
         """
 
         login_requested            = Signal()
         logout_requested           = Signal()
         change_password_requested  = Signal()
 
+        _CHIP_QSS = (
+            "QPushButton {"
+            "  color: #FFFFFF;"
+            "  background: rgba(255,255,255,0.11);"
+            "  border: 1px solid rgba(255,255,255,0.18);"
+            "  border-radius: 10px;"
+            "  padding: 0px 14px;"
+            "  font-size: 12px;"
+            "  font-weight: 500;"
+            "  min-height: 32px;"
+            "  min-width: 0px;"
+            "}"
+            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.06); }"
+            "QPushButton:disabled {"
+            "  color: rgba(255,255,255,0.40);"
+            "  background: rgba(255,255,255,0.05);"
+            "}"
+        )
+
         def __init__(self, parent: Optional[QWidget] = None) -> None:
             super().__init__(parent)
             self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             self.setStyleSheet("background: transparent;")
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
             lay = QHBoxLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
 
-            self._btn = QPushButton("Login")
-            self._btn.setFixedHeight(32)
-            self._btn.clicked.connect(self._on_btn_clicked)
-            lay.addWidget(self._btn)
+            # Button A — "Login" (blue, uses global QSS #btn_login rule)
+            self._btn_login = QPushButton("Login")
+            self._btn_login.setObjectName("btn_login")
+            self._btn_login.setFixedHeight(32)
+            self._btn_login.setToolTip("Click to sign in")
+            self._btn_login.clicked.connect(lambda: self.login_requested.emit())
+            lay.addWidget(self._btn_login)
+
+            # Button B — user chip (glass pill, inline QSS)
+            self._btn_chip = QPushButton("")
+            self._btn_chip.setFixedHeight(32)
+            self._btn_chip.setStyleSheet(self._CHIP_QSS)
+            self._btn_chip.clicked.connect(self._show_user_menu)
+            lay.addWidget(self._btn_chip)
 
             self._logged_in = False
-            self._apply_login_style()
+            self._show_login_button()
 
         # ── Public API ────────────────────────────────────────────────
 
         def set_no_auth(self, display_name: str, role_label: str) -> None:
             """Static chip (non-interactive) — AD disabled, no login."""
             self._logged_in = False
-            self._btn.setText(f"{display_name}  [{role_label}]")
-            self._apply_chip_style(enabled=False)
+            self._btn_chip.setText(f"{display_name}  [{role_label}]")
+            self._btn_chip.setEnabled(False)
+            self._btn_chip.setToolTip("Running as local administrator")
+            self._show_chip_button()
 
         def set_guest(self) -> None:
             """Show Login button — nobody signed in."""
             self._logged_in = False
-            self._btn.setText("Login")
-            self._apply_login_style()
+            self._show_login_button()
 
         def set_logged_in(self, display_name: str, role_label: str) -> None:
             """Show user chip — click opens Change Password / Log Off."""
             self._logged_in = True
-            self._btn.setText(f"{display_name}  [{role_label}]")
-            self._apply_chip_style(enabled=True)
+            self._btn_chip.setText(f"{display_name}  [{role_label}]")
+            self._btn_chip.setEnabled(True)
+            self._btn_chip.setToolTip("Click to change password or log off")
+            self._show_chip_button()
 
         # ── Private ───────────────────────────────────────────────────
 
-        def _apply_login_style(self) -> None:
-            self._btn.setEnabled(True)
-            self._btn.setToolTip("Click to sign in")
-            # Use objectName so the global QSS rule for btn_batch_start applies.
-            self._btn.setObjectName("btn_login")
-            self._btn.setStyleSheet("")     # let global QSS handle it
-            self._btn.style().unpolish(self._btn)
-            self._btn.style().polish(self._btn)
-            self._btn.updateGeometry()
+        def _show_login_button(self) -> None:
+            """Show the Login button, hide the chip."""
+            self._btn_chip.hide()
+            self._btn_login.show()
+            self._force_relayout()
 
-        def _apply_chip_style(self, enabled: bool) -> None:
-            self._btn.setEnabled(enabled)
-            self._btn.setToolTip(
-                "Click to change password or log off" if enabled
-                else "Running as local administrator"
-            )
-            self._btn.setObjectName("")     # clear special name
-            self._btn.setStyleSheet(
-                "QPushButton {"
-                "  color: #FFFFFF;"
-                "  background: rgba(255,255,255,0.11);"
-                "  border: 1px solid rgba(255,255,255,0.18);"
-                "  border-radius: 10px;"
-                "  padding: 0px 14px;"
-                "  font-size: 12px;"
-                "  font-weight: 500;"
-                "  min-height: 32px;"
-                "  min-width: 0px;"
-                "}"
-                "QPushButton:hover { background: rgba(255,255,255,0.18); }"
-                "QPushButton:pressed { background: rgba(255,255,255,0.06); }"
-                "QPushButton:disabled {"
-                "  color: rgba(255,255,255,0.40);"
-                "  background: rgba(255,255,255,0.05);"
-                "}"
-            )
-            self._btn.style().unpolish(self._btn)
-            self._btn.style().polish(self._btn)
-            self._btn.updateGeometry()
+        def _show_chip_button(self) -> None:
+            """Show the chip button, hide the Login button."""
+            self._btn_login.hide()
+            self._btn_chip.show()
+            self._force_relayout()
 
-        def _on_btn_clicked(self) -> None:
-            if self._logged_in:
-                self._show_user_menu()
-            else:
-                self.login_requested.emit()
+        def _force_relayout(self) -> None:
+            """Force the parent layout chain to recalculate geometry."""
+            self.adjustSize()
+            self.updateGeometry()
+            # Walk up the parent chain to invalidate layouts so the
+            # header bar allocates the correct width immediately.
+            w: Optional[QWidget] = self.parentWidget()
+            while w is not None:
+                lay = w.layout()
+                if lay is not None:
+                    lay.invalidate()
+                    lay.activate()
+                w.updateGeometry()
+                w = w.parentWidget()
 
         def _show_user_menu(self) -> None:
             menu = QMenu(self)
@@ -1570,7 +1635,7 @@ class MainWindow(QMainWindow):
             act_logout = menu.addAction("Log Off")
 
             chosen = menu.exec(
-                self._btn.mapToGlobal(self._btn.rect().bottomLeft())
+                self._btn_chip.mapToGlobal(self._btn_chip.rect().bottomLeft())
             )
 
             if chosen is act_change_pw:
@@ -1599,22 +1664,20 @@ class MainWindow(QMainWindow):
         session = auth.get_session()
 
         if session is not None and session.authenticated_via == "no_auth":
-            # Static no-interaction chip — AD fully disabled, no local login.
             self._login_widget.set_no_auth(
                 session.display_name, session.role_display()
             )
         elif session is None or session.authenticated_via in ("guest", "auto"):
-            # Not yet logged in — show Login button regardless of AD mode.
             self._login_widget.set_guest()
         else:
-            # Real session (ldap, cache, or local) — show user chip with menu.
             self._login_widget.set_logged_in(
                 session.display_name, session.role_display()
             )
 
         logger.debug(
-            "LoginWidget refreshed | via=%s",
+            "LoginWidget refreshed | via=%s display=%s",
             session.authenticated_via if session else "None",
+            session.display_name if session else "N/A",
         )
 
     def _on_login_button_clicked(self) -> None:
@@ -1634,28 +1697,37 @@ class MainWindow(QMainWindow):
         """
         from ui.login_dialog import LoginDialog
 
-        # _user_cache is always required; _ldap_svc may be None in local-only mode.
         if self._user_cache is None:
             logger.error(
                 "_on_login_button_clicked called but user_cache is None — cannot authenticate"
             )
             return
 
-        # Pass ldap_svc=None when AD is disabled; LoginDialog handles that gracefully.
         dialog = LoginDialog(self._ldap_svc, self._user_cache, parent=self)
-        accepted = dialog.exec()
+        result = dialog.exec()
+        accepted = (result == QDialog.DialogCode.Accepted)
 
-        # Always apply the session from the dialog if it was accepted.
-        # _on_auth_succeeded inside the dialog already calls auth.set_session(),
-        # but we re-apply here as a safety net for edge cases (e.g. force
-        # password change flow, PySide6 signal delivery timing).
-        if accepted and dialog.session is not None:
-            auth.set_session(dialog.session)
+        # Three-layer session recovery: dialog property → auth global → worker.
+        # This guarantees the session is captured even if one pathway failed.
+        if accepted:
+            session = dialog.session
+            if session is None:
+                session = auth.get_session()
+            if session is None:
+                logger.error(
+                    "Login dialog accepted but no session found — "
+                    "this is a bug; please report it"
+                )
+            else:
+                auth.set_session(session)
 
+        # Refresh immediately + schedule a deferred refresh so any pending
+        # layout/paint events are processed before the second pass.
         self._refresh_login_widget()
+        QTimer.singleShot(0, self._refresh_login_widget)
 
         session = auth.get_session()
-        if session is not None and session.authenticated_via not in ("guest", "auto", "no_auth"):
+        if accepted and session is not None and session.authenticated_via not in ("guest", "auto", "no_auth"):
             logger.info(
                 "Login accepted via header button | user=%s role=%s via=%s",
                 session.username, session.role.name, session.authenticated_via,
@@ -1666,7 +1738,7 @@ class MainWindow(QMainWindow):
             )
             _audit("LOGIN", user=session.username, role=session.role.name,
                    via=session.authenticated_via)
-        else:
+        elif not accepted:
             logger.info("Login dialog cancelled — guest session remains active")
 
     @Slot()
@@ -2032,6 +2104,12 @@ class MainWindow(QMainWindow):
         """Open the user management dialog (Admin only)."""
         from ui.user_management_dialog import UserManagementDialog
         dlg = UserManagementDialog(self._user_cache, parent=self)
+        dlg.exec()
+
+    def _on_open_audit_log(self) -> None:
+        """Open the audit log viewer dialog."""
+        from ui.audit_log_dialog import AuditLogDialog
+        dlg = AuditLogDialog(parent=self)
         dlg.exec()
 
     # ------------------------------------------------------------------

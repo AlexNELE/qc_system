@@ -69,6 +69,26 @@ _shared_session: Optional[ort.InferenceSession] = None
 _shared_session_lock: threading.Lock = threading.Lock()
 
 
+def _preferred_providers() -> list[str]:
+    """
+    Return ONNX provider priority list.
+
+    Always tries CUDAExecutionProvider first; falls back to CPU if the
+    GPU package is not installed or no CUDA device is present.  ONNX
+    Runtime silently skips providers that are unavailable.
+    """
+    available = ort.get_available_providers()
+    providers: list[str] = []
+    if "CUDAExecutionProvider" in available:
+        providers.append("CUDAExecutionProvider")
+    providers.append("CPUExecutionProvider")
+    if providers[0] == "CUDAExecutionProvider":
+        logger.info("ONNX provider: CUDAExecutionProvider (GPU)")
+    else:
+        logger.info("ONNX provider: CPUExecutionProvider (no CUDA available)")
+    return providers
+
+
 def get_shared_session(model_path: str) -> ort.InferenceSession:
     """
     Lazy-initialise and return the module-level shared ONNX session.
@@ -83,7 +103,7 @@ def get_shared_session(model_path: str) -> ort.InferenceSession:
                 logger.info("Initialising shared ONNX session from %s", model_path)
                 _shared_session = ort.InferenceSession(
                     model_path,
-                    providers=["CPUExecutionProvider"],
+                    providers=_preferred_providers(),
                 )
     return _shared_session
 
@@ -136,7 +156,7 @@ class Detector:
             logger.debug("Creating private ONNX session from %s", model_path)
             self._session = ort.InferenceSession(
                 model_path,
-                providers=["CPUExecutionProvider"],
+                providers=_preferred_providers(),
             )
             self._owns_session = True
 

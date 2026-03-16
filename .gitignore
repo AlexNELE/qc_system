@@ -48,5 +48,14 @@ Thumbs.db
 # Corrupted DB backups
 *.db.corrupt
 
+# Audit trail (runtime data)
+audit_logs/
+
+# Claude Code tool metadata
+.claude/
+
+# Benchmark scripts (dev only)
+bench_*.py
+
 # Local settings override (may contain site-specific paths)
 # settings.json is intentionally tracked — only remove if it contains secrets

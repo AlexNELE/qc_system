@@ -84,6 +84,42 @@ def _patch_syspath() -> None:
             sys.path.insert(0, meipass)
 
 
+def _register_cuda_dlls() -> None:
+    """
+    Register NVIDIA CUDA 12 runtime DLLs so onnxruntime can find them.
+
+    When running from source the DLLs live in pip's nvidia-* packages under
+    site-packages/nvidia/<lib>/bin/.  When bundled by PyInstaller they are
+    collected into the application directory (or _internal/) automatically.
+
+    This function must be called BEFORE any ``import onnxruntime``.
+    """
+    import glob
+
+    if getattr(sys, "frozen", False):
+        # PyInstaller bundle — DLLs are in the app directory already.
+        # os.add_dll_directory on the exe dir covers it.
+        app_dir = os.path.dirname(sys.executable)
+        try:
+            os.add_dll_directory(app_dir)
+        except OSError:
+            pass
+        return
+
+    # Development / non-frozen — scan nvidia pip packages
+    site_nvidia = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia")
+    if not os.path.isdir(site_nvidia):
+        return
+
+    for bin_dir in glob.glob(os.path.join(site_nvidia, "*", "bin")):
+        if os.path.isdir(bin_dir):
+            try:
+                os.add_dll_directory(bin_dir)
+            except OSError:
+                pass
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
 _APPLE_DARK_QSS = """
 /* =================================================================
    Apple macOS Dark Mode  —  QC Inspection System
@@ -318,6 +354,7 @@ def _apply_apple_style(app) -> None:
 
 if __name__ == "__main__":
     _patch_syspath()
+    _register_cuda_dlls()
     _setup_logging()
 
     logger = logging.getLogger("main")

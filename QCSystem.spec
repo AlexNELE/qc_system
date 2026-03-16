@@ -8,6 +8,12 @@
 # operator workstation and to keep the models/ directory accessible for
 # hot-swapping without rebuilding.
 #
+# CUDA / GPU support:
+#   The spec automatically detects nvidia-* pip packages (cublas, cudnn,
+#   cuda_runtime, etc.) and bundles their DLLs so the built application
+#   runs with GPU acceleration on any machine with a compatible NVIDIA
+#   driver — no CUDA Toolkit install required on the target machine.
+#
 # Hidden imports:
 #   onnxruntime dynamically loads execution-provider DLLs at runtime.
 #   PyInstaller cannot detect these automatically so we list them here.
@@ -15,6 +21,7 @@
 
 import sys
 import os
+import glob
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -25,12 +32,42 @@ block_cipher = None
 ROOT = Path(SPECPATH)
 
 # ---------------------------------------------------------------------------
+# CUDA DLL collection — gather all nvidia pip-package DLLs as binaries
+# ---------------------------------------------------------------------------
+_site_packages = Path(sys.prefix) / 'Lib' / 'site-packages'
+_nvidia_root   = _site_packages / 'nvidia'
+
+cuda_binaries = []
+if _nvidia_root.is_dir():
+    # Each nvidia-<lib>-cu12 package stores DLLs under nvidia/<lib>/bin/
+    for dll in _nvidia_root.glob('*/bin/*.dll'):
+        # (source_path, destination_folder_in_bundle)
+        # Placing all DLLs in '.' (root of the bundle) so onnxruntime
+        # finds them automatically via os.add_dll_directory in main.py
+        cuda_binaries.append((str(dll), '.'))
+    print(f'[QCSystem.spec] Collected {len(cuda_binaries)} CUDA DLLs from {_nvidia_root}')
+else:
+    print('[QCSystem.spec] WARNING: nvidia pip packages not found — '
+          'build will be CPU-only.  Install nvidia-cublas-cu12, '
+          'nvidia-cudnn-cu12 etc. for GPU support.')
+
+# Also collect onnxruntime CUDA provider DLLs (they live inside onnxruntime/capi/)
+_ort_capi = _site_packages / 'onnxruntime' / 'capi'
+ort_cuda_binaries = []
+if _ort_capi.is_dir():
+    for dll in _ort_capi.glob('onnxruntime_providers_cuda*'):
+        ort_cuda_binaries.append((str(dll), 'onnxruntime/capi'))
+    for dll in _ort_capi.glob('onnxruntime_providers_shared*'):
+        ort_cuda_binaries.append((str(dll), 'onnxruntime/capi'))
+    print(f'[QCSystem.spec] Collected {len(ort_cuda_binaries)} ORT provider DLLs')
+
+# ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
 a = Analysis(
     [str(ROOT / 'main.py')],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=cuda_binaries + ort_cuda_binaries,
     datas=[
         # Ship the models directory so the ONNX file is available at runtime.
         (str(ROOT / 'models'), 'models'),
@@ -42,6 +79,8 @@ a = Analysis(
         (str(ROOT / 'plc'),     'plc'),
         # PDF user manual — accessible via Help menu at runtime.
         (str(ROOT / 'docs'),    'docs'),
+        # Settings file — ship the default configuration.
+        (str(ROOT / 'settings.json'), '.'),
     ],
     hiddenimports=[
         # ONNX Runtime execution providers
@@ -75,6 +114,12 @@ a = Analysis(
         'services.profinet_service',
         # scapy — collected automatically (many dynamic layer imports)
         *collect_submodules('scapy'),
+        # Beckhoff ADS — optional
+        'pyads',
+        # reportlab — for PDF export (audit log)
+        'reportlab',
+        'reportlab.lib',
+        'reportlab.platypus',
     ],
     hookspath=[],
     hooksconfig={},
@@ -132,6 +177,21 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=[
+        # Do NOT compress CUDA DLLs — they are already optimised binaries
+        # and UPX can cause load failures on some systems.
+        'cublas*.dll',
+        'cublasLt*.dll',
+        'cudart*.dll',
+        'cudnn*.dll',
+        'cufft*.dll',
+        'curand*.dll',
+        'cusolver*.dll',
+        'cusparse*.dll',
+        'nvjitlink*.dll',
+        'nvrtc*.dll',
+        'onnxruntime_providers_cuda*',
+        'onnxruntime_providers_shared*',
+    ],
     name='QCSystem',
 )

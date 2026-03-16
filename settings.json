@@ -25,10 +25,10 @@
         "reconnect_max": 30.0
     },
     "profinet": {
-        "enabled": false,
+        "enabled": true,
         "interface": "Ethernet",
         "station_name": "qc-inspection-sys",
-        "mac_address": "",
+        "mac_address": "000000000",
         "ip_address": "192.168.0.2",
         "subnet_mask": "255.255.255.0",
         "gateway": "192.168.0.1",
@@ -36,7 +36,7 @@
         "watchdog_ms": 200
     },
     "beckhoff": {
-        "enabled": false,
+        "enabled": true,
         "ams_net_id": "5.80.201.232.1.1",
         "ams_port": 851,
         "symbol_name": "GVL.stQC",
